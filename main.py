@@ -53,6 +53,7 @@ from app.list_module import list_router
 from app.rulecheck import rulecheck_router
 from app.legal_modules import render_impressum_module, render_datenschutz_module
 from app.projects import projects_router   # NEU: Projekt-Routen
+from app.auth import auth_router, get_current_user_optional
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Konfiguration
@@ -69,6 +70,28 @@ async def lifespan(app):
 
 
 app = FastAPI(title="BIMPruef – IFC Comparison Platform", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def authentication_middleware(request: Request, call_next):
+    public_prefixes = (
+        "/auth",
+        "/impressum",
+        "/datenschutz",
+        "/favicon.ico",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    )
+    path = request.url.path
+    if not path.startswith(public_prefixes):
+        user = get_current_user_optional(request)
+        if not user:
+            return RedirectResponse("/auth/login", status_code=302)
+    return await call_next(request)
+
+
+app.include_router(auth_router)
 
 # Reihenfolge wichtig: projects_router definiert "/", muss vor viewer_router liegen
 app.include_router(projects_router)
