@@ -19,9 +19,9 @@ import html
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.auth import require_user
+
 from app.project_storage import (
-    DEFAULT_ACCOUNT,
-    get_account,
     list_projects,
     create_project,
     get_project,
@@ -33,7 +33,6 @@ from app.project_storage import (
 
 projects_router = APIRouter()
 
-ACCOUNT_ID = "default"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CSS / Layout-Helpers
@@ -117,6 +116,9 @@ def _topbar_global(account: dict) -> str:
         f'<div style="margin-left:auto;display:flex;gap:8px">'
         f'<a href="/impressum" style="font-size:11px;color:var(--muted)">Impressum</a>'
         f'<a href="/datenschutz" style="font-size:11px;color:var(--muted)">Datenschutz</a>'
+        f'<form method="POST" action="/auth/logout" style="margin:0">'
+        f'<button type="submit" class="btn" style="font-size:11px;padding:3px 9px">Logout</button>'
+        f'</form>'
         f'</div>'
         f'</div>'
     )
@@ -184,14 +186,26 @@ def _placeholder_page(project: dict, account: dict, module: str) -> HTMLResponse
     return _page(f"{pname} – {module}", body)
 
 
+
+
+def _account_from_request(request: Request) -> dict:
+    user = require_user(request)
+    return {
+        "account_id": user["user_id"],
+        "account_name": user["email"],
+        "workspace": "Personal",
+        "created_at": user.get("created_at", ""),
+    }
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Root → Projektübersicht
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.get("/", response_class=HTMLResponse)
-def projects_home():
-    account  = get_account(ACCOUNT_ID)
-    projects = list_projects(ACCOUNT_ID)
+def projects_home(request: Request):
+    account  = _account_from_request(request)
+    account_id = account["account_id"]
+    projects = list_projects(account_id)
 
     rows = ""
     for p in projects:
@@ -199,7 +213,7 @@ def projects_home():
         badge  = (f'<span class="badge badge-active">active</span>'
                   if p.get("status") == "active"
                   else f'<span class="badge badge-inactive">{_e(p.get("status",""))}</span>')
-        model_count = get_project_model_count(ACCOUNT_ID, p["project_id"])
+        model_count = get_project_model_count(account_id, p["project_id"])
         rows += (
             f"<tr>"
             f"<td style='font-weight:600;color:var(--accent)'>{_e(p.get('project_code',''))}</td>"
@@ -256,8 +270,8 @@ def projects_home():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.get("/projects/new", response_class=HTMLResponse)
-def new_project_form(error: str = ""):
-    account = get_account(ACCOUNT_ID)
+def new_project_form(request: Request, error: str = ""):
+    account = _account_from_request(request)
     err_html = f'<div class="flash-err">{_e(error)}</div>' if error else ""
     body = (
         f'{_topbar_global(account)}'
@@ -285,6 +299,7 @@ def new_project_form(error: str = ""):
 
 @projects_router.post("/projects/create")
 async def create_project_post(
+    request: Request,
     project_code: str = Form(...),
     project_name: str = Form(...),
     description: str  = Form(default=""),
@@ -294,7 +309,8 @@ async def create_project_post(
     if not project_name.strip():
         return RedirectResponse("/projects/new?error=Projektname+darf+nicht+leer+sein", status_code=303)
 
-    p = create_project(ACCOUNT_ID, project_code, project_name, description)
+    account = _account_from_request(request)
+    p = create_project(account["account_id"], project_code, project_name, description)
     return RedirectResponse(f"/projects/{p['project_id']}", status_code=303)
 
 
@@ -303,9 +319,10 @@ async def create_project_post(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.get("/projects/{project_id}", response_class=HTMLResponse)
-def project_dashboard(project_id: str):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_dashboard(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return _page("Nicht gefunden", '<div style="padding:40px">Projekt nicht gefunden. <a href="/">← Zurück</a></div>')
 
@@ -313,14 +330,14 @@ def project_dashboard(project_id: str):
     pname  = project["project_name"]
     pcode  = project["project_code"]
     status = project.get("status", "active")
-    model_count = get_project_model_count(ACCOUNT_ID, project_id)
+    model_count = get_project_model_count(account_id, project_id)
 
     badge = (f'<span class="badge badge-active">active</span>'
              if status == "active"
              else f'<span class="badge badge-inactive">{_e(status)}</span>')
 
     # Session-ID für direkten Viewer-Link
-    sid = get_or_create_project_session(ACCOUNT_ID, project_id)
+    sid = get_or_create_project_session(account_id, project_id)
 
     stat_cards = (
         f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:20px">'
@@ -378,16 +395,18 @@ def project_dashboard(project_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.get("/projects/{project_id}/model", response_class=HTMLResponse)
-def project_model(project_id: str):
+def project_model(request: Request, project_id: str):
     """
     Leitet zum bestehenden Viewer weiter (session_id aus Projektmapping).
     Die gesamte Upload/Viewer-Logik bleibt unverändert in viewer.py.
     """
-    project = get_project(ACCOUNT_ID, project_id)
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
 
-    sid = get_or_create_project_session(ACCOUNT_ID, project_id)
+    sid = get_or_create_project_session(account_id, project_id)
     return RedirectResponse(f"/viewer/?session_id={sid}", status_code=302)
 
 
@@ -396,45 +415,50 @@ def project_model(project_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.get("/projects/{project_id}/documents", response_class=HTMLResponse)
-def project_documents(project_id: str):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_documents(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
     return _placeholder_page(project, account, "documents")
 
 
 @projects_router.get("/projects/{project_id}/issues", response_class=HTMLResponse)
-def project_issues(project_id: str):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_issues(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
     return _placeholder_page(project, account, "issues")
 
 
 @projects_router.get("/projects/{project_id}/todo", response_class=HTMLResponse)
-def project_todo(project_id: str):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_todo(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
     return _placeholder_page(project, account, "todo")
 
 
 @projects_router.get("/projects/{project_id}/checking", response_class=HTMLResponse)
-def project_checking(project_id: str):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_checking(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
     return _placeholder_page(project, account, "checking")
 
 
 @projects_router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
-def project_settings(project_id: str, saved: str = ""):
-    account = get_account(ACCOUNT_ID)
-    project = get_project(ACCOUNT_ID, project_id)
+def project_settings(request: Request, project_id: str, saved: str = ""):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
 
@@ -473,13 +497,15 @@ def project_settings(project_id: str, saved: str = ""):
 
 @projects_router.post("/projects/{project_id}/settings")
 async def project_settings_save(
+    request: Request,
     project_id:   str,
     project_code: str = Form(...),
     project_name: str = Form(...),
     description:  str = Form(default=""),
     status:       str = Form(default="active"),
 ):
-    update_project(ACCOUNT_ID, project_id, project_code=project_code,
+    account = _account_from_request(request)
+    update_project(account["account_id"], project_id, project_code=project_code,
                    project_name=project_name, description=description, status=status)
     return RedirectResponse(f"/projects/{project_id}/settings?saved=1", status_code=303)
 
@@ -489,6 +515,7 @@ async def project_settings_save(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @projects_router.post("/projects/{project_id}/delete")
-async def project_delete(project_id: str):
-    delete_project(ACCOUNT_ID, project_id)
+async def project_delete(request: Request, project_id: str):
+    account = _account_from_request(request)
+    delete_project(account["account_id"], project_id)
     return RedirectResponse("/", status_code=303)
