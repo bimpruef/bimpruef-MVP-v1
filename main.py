@@ -1,11 +1,25 @@
 """
 main.py – BIMPruef FastAPI-Applikation
 
-Nach PIN-Login wird direkt zum 3D-Viewer weitergeleitet (neue Session).
-Legacy-Routen (Session-Dashboard, Objektliste, Vergleich, Clash) bleiben erhalten.
+Neue Struktur:
+  /                             → Account-/Projektübersicht
+  /projects/new                 → Neues Projekt
+  /projects/create              → Projekt erstellen (POST)
+  /projects/{id}                → Projekt-Dashboard
+  /projects/{id}/model          → Weiterleitung zum Viewer mit Projekt-Session
+  /projects/{id}/…              → weitere Modul-Routen (Platzhalter)
+
+  Legacy-Routen bleiben erhalten:
+  /viewer/                      → 3D-Viewer
+  /viewer/upload/               → Upload
+  /viewer/clash/                → Clash-Analyse
+  /viewer/list/                 → Elementliste
+  /viewer/rulecheck/            → Rule-Check
+  /session/{id}                 → Session-Dashboard (Legacy)
+  /objects/                     → Objektliste (Legacy)
+  /compare-elements/            → Elementvergleich (Legacy)
+  /compare-clashes/             → Clash Legacy
 """
-
-
 
 import html
 import json
@@ -38,12 +52,12 @@ from app.viewer import router as viewer_router
 from app.list_module import list_router
 from app.rulecheck import rulecheck_router
 from app.legal_modules import render_impressum_module, render_datenschutz_module
+from app.projects import projects_router   # NEU: Projekt-Routen
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Konfiguration
 # ─────────────────────────────────────────────────────────────────────────────
-ACCESS_PIN      = os.environ.get("ACCESS_PIN", "16880")
-BCF_CLASH_LIMIT = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
+BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
 MAX_FILE_SIZE_MB    = 100
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -55,108 +69,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="BIMPruef – IFC Comparison Platform", lifespan=lifespan)
+
+# Reihenfolge wichtig: projects_router definiert "/", muss vor viewer_router liegen
+app.include_router(projects_router)
 app.include_router(viewer_router)
 app.include_router(list_router)
 app.include_router(rulecheck_router)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PIN-Middleware
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.middleware("http")
-async def pin_protection(request, call_next):
-    open_paths = ["/impressum", "/datenschutz", "/pin"]
-    if request.url.path in open_paths:
-        return await call_next(request)
-
-    pin_cookie = request.cookies.get("access_pin", "")
-    if pin_cookie == ACCESS_PIN:
-        return await call_next(request)
-
-    if request.method == "POST" and request.url.path == "/pin-check":
-        form        = await request.form()
-        entered_pin = form.get("pin", "")
-        if entered_pin == ACCESS_PIN:
-            # Neue Session pro Browser-Fenster – kein Session-Cookie setzen,
-            # damit jedes Fenster seine eigene, unabhängige Session bekommt.
-            new_session = create_upload_session()
-            response    = RedirectResponse(
-                url=f"/viewer/?session_id={new_session}", status_code=303
-            )
-            response.set_cookie(
-                key="access_pin", value=ACCESS_PIN,
-                httponly=True, samesite="lax", max_age=60 * 60 * 8,
-            )
-            # Kein bimpruef_session-Cookie mehr – Session-ID wird nur im
-            # sessionStorage des Browsers gehalten (siehe viewer.py JS).
-            return response
-        else:
-            return _pin_page(error=True)
-
-    return _pin_page(error=False)
-
-
-def _pin_page(error: bool):
-    error_msg = (
-        '<p style="color:#e94560;margin:0 0 12px;font-size:14px;">'
-        "PIN ungültig. Bitte erneut versuchen.</p>"
-    ) if error else ""
-    content = f"""<!DOCTYPE html>
-<html><head><title>BIMPruef – PIN eingeben</title>
-<style>
-  *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0e0e1a;
-    display:flex;align-items:center;justify-content:center;min-height:100vh}}
-  .card{{background:#16213e;padding:44px 40px;border-radius:14px;
-    border:1px solid #1e3a6e;width:340px;text-align:center;
-    box-shadow:0 8px 32px rgba(0,0,0,.5)}}
-  h2{{margin:0 0 4px;font-size:22px;color:#4fc3f7;letter-spacing:1px;
-    font-family:monospace}}
-  p.sub{{color:#4a6080;font-size:12px;margin:0 0 28px;letter-spacing:.5px}}
-  input[type=password]{{width:100%;padding:13px;font-size:22px;
-    letter-spacing:8px;text-align:center;background:#0e1a30;
-    border:1px solid #1e3a6e;border-radius:8px;color:#d0dce8;
-    margin-bottom:16px;outline:none;transition:border-color .2s;
-    font-family:monospace}}
-  input[type=password]:focus{{border-color:#4fc3f7}}
-  button{{width:100%;padding:13px;background:#4fc3f7;color:#0a1a2e;
-    border:none;border-radius:8px;font-size:14px;font-weight:700;
-    cursor:pointer;transition:background .15s}}
-  button:hover{{background:#81d4fa}}
-  .links{{margin-top:22px;font-size:11px}}
-  .links a{{color:#2a5080;margin:0 8px;text-decoration:none}}
-  .links a:hover{{color:#4fc3f7}}
-</style>
-</head><body>
-<div class="card">
-  <h2>BIMPruef</h2>
-  <p class="sub">IFC · CLASH · 3D</p>
-  {error_msg}
-  <form method="post" action="/pin-check">
-    <input type="password" name="pin" placeholder="••••••" autofocus maxlength="10">
-    <button type="submit">Zugang</button>
-  </form>
-  <div class="links">
-    <a href="/impressum">Impressum</a>
-    <a href="/datenschutz">Datenschutz</a>
-  </div>
-</div>
-</body></html>"""
-    return HTMLResponse(content=content)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Root → Viewer
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    # Immer eine neue Session erstellen – niemals Cookie-Session wiederverwenden,
-    # damit jedes Browserfenster eine eigene, isolierte Sitzung erhält.
-    new_session = create_upload_session()
-    response = RedirectResponse(url=f"/viewer/?session_id={new_session}", status_code=302)
-    return response
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +356,6 @@ def download_clashes_bcf(
 
 @app.get("/impressum", response_class=HTMLResponse)
 def impressum(request: Request):
-    # Da kein Session-Cookie mehr gesetzt wird, verlinkt "Zurück" auf die Root.
     content = render_impressum_module(back_link="/")
     return _build_page("Impressum – BIMPruef", content)
 
@@ -450,15 +367,15 @@ def datenschutz(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Session-Löschung (wird beim Schließen des Browser-Fensters aufgerufen)
+# Session-Löschung (beim Schließen des Browser-Tabs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.delete("/session/delete/")
 async def session_delete_endpoint(request: Request):
     """
-    Löscht eine Session sofort, wenn der Browser das Fenster/Tab schließt.
-    Wird per navigator.sendBeacon() oder fetch() mit keepalive aus dem
-    beforeunload/visibilitychange-Handler aufgerufen.
+    Löscht eine temporäre (nicht-Projekt-)Session sofort.
+    Projekt-Sessions werden hier NICHT gelöscht, da sie in
+    project_storage.py verwaltet werden.
     """
     try:
         body = await request.json()
@@ -467,6 +384,15 @@ async def session_delete_endpoint(request: Request):
         session_id = request.query_params.get("session_id", "").strip()
 
     if session_id:
-        delete_session(session_id)
+        # Nur löschen, wenn diese Session keinem Projekt zugeordnet ist
+        from app.project_storage import _projects_file, _load_projects, get_project_session, ACCOUNT_ID
+        project_sessions = set()
+        for p in _load_projects(ACCOUNT_ID):
+            sid = get_project_session(ACCOUNT_ID, p["project_id"])
+            if sid:
+                project_sessions.add(sid)
+
+        if session_id not in project_sessions:
+            delete_session(session_id)
 
     return Response(status_code=204)
