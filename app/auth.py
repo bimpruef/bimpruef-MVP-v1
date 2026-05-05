@@ -67,8 +67,8 @@ def validate_email(email: str) -> Optional[str]:
 def validate_password(password: str) -> Optional[str]:
     password = password or ""
 
-    if len(password) < 10:
-        return "Password must contain at least 10 characters."
+    if len(password) < 6:
+        return "Password must contain at least 6 characters."
 
     checks = [
         any(c.islower() for c in password),
