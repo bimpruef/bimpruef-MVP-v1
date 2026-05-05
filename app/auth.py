@@ -19,14 +19,25 @@ from passlib.context import CryptContext
 from sqlalchemy.exc import IntegrityError
 
 from app.db import SessionLocal, init_db
+from app.exceptions import AuthError, ConflictError, ValidationError
 from app.models import User
 
 init_db()
 
 AUTH_COOKIE_NAME = "bimpruef_auth"
-SESSION_MAX_AGE_SECONDS = int(os.environ.get("AUTH_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12)))
+SESSION_MAX_AGE_SECONDS = int(
+    os.environ.get("AUTH_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12))
+)
 AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "dev-change-this-secret-key")
 SIGNUP_INVITE_CODE = os.environ.get("SIGNUP_INVITE_CODE", "16880")
+
+# Whether to set the Secure flag on the session cookie.
+# Default is True; set COOKIE_SECURE=0 / false / no to disable (dev only).
+_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 EMAIL_RE = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -42,11 +53,17 @@ pwd_context = CryptContext(
 auth_router = APIRouter(prefix="/auth")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Input validation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def normalize_email(email: str) -> str:
     return str(email or "").strip().lower()
 
 
 def validate_email(email: str) -> Optional[str]:
+    """Return an error string, or None when the address is acceptable."""
     email = normalize_email(email)
     parsed_name, parsed_addr = parseaddr(email)
 
@@ -65,6 +82,7 @@ def validate_email(email: str) -> Optional[str]:
 
 
 def validate_password(password: str) -> Optional[str]:
+    """Return an error string, or None when the password meets requirements."""
     password = password or ""
 
     if len(password) < 6:
@@ -87,10 +105,15 @@ def validate_password(password: str) -> Optional[str]:
 
 
 def validate_invite_code(invite_code: str) -> Optional[str]:
+    """Return an error string, or None when the invite code is valid."""
     if str(invite_code or "").strip() != SIGNUP_INVITE_CODE:
         return "Invalid invitation code."
-
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Password hashing
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _hash_password(password: str) -> str:
@@ -100,11 +123,15 @@ def _hash_password(password: str) -> str:
 def _verify_password(password: str, password_hash: str) -> bool:
     if not password_hash:
         return False
-
     try:
         return pwd_context.verify(password, password_hash)
     except Exception:
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# User serialisation
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _user_to_dict(user: User) -> dict:
@@ -115,9 +142,13 @@ def _user_to_dict(user: User) -> dict:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Database helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def get_user_by_email(email: str) -> Optional[dict]:
     email = normalize_email(email)
-
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == email).first()
         return _user_to_dict(user) if user else None
@@ -125,76 +156,88 @@ def get_user_by_email(email: str) -> Optional[dict]:
 
 def get_user_by_id(user_id: str) -> Optional[dict]:
     user_id = str(user_id or "").strip()
-
     if not user_id:
         return None
-
     with SessionLocal() as db:
         user = db.query(User).filter(User.user_id == user_id).first()
         return _user_to_dict(user) if user else None
 
 
 def create_user(email: str, password: str) -> dict:
+    """
+    Create and persist a new user.
+
+    Raises:
+        ConflictError: when an account with this e-mail already exists.
+    """
     email = normalize_email(email)
 
+    user = User(
+        user_id=uuid.uuid4().hex,
+        email=email,
+        password_hash=_hash_password(password),
+    )
+
     with SessionLocal() as db:
-        existing = db.query(User).filter(User.email == email).first()
-
-        if existing:
-            raise ValueError("An account with this email already exists.")
-
-        user = User(
-            user_id=uuid.uuid4().hex,
-            email=email,
-            password_hash=_hash_password(password),
-        )
-
         db.add(user)
-
         try:
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise ValueError("An account with this email already exists.")
-
+            raise ConflictError("An account with this email already exists.")
         db.refresh(user)
         return _user_to_dict(user)
 
 
 def authenticate_user(email: str, password: str) -> Optional[dict]:
+    """Return a user dict on success, or None on invalid credentials."""
     email = normalize_email(email)
-
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == email).first()
-
         if not user:
             return None
-
         if not _verify_password(password, user.password_hash):
             return None
-
         return _user_to_dict(user)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Session token  (HMAC-SHA256 signed)
+#
+# Token format:  {user_id}.{issued_ts}.{nonce}.{signature}
+#
+# Using hmac.new() which is the stdlib alias for hmac.HMAC().
+# The digest is compared with hmac.compare_digest to prevent timing attacks.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def _sign(value: str) -> str:
-    return hmac.new(
+    mac = hmac.new(
         AUTH_SECRET_KEY.encode("utf-8"),
         value.encode("utf-8"),
         hashlib.sha256,
-    ).hexdigest()
+    )
+    return mac.hexdigest()
 
 
 def create_session_token(user_id: str) -> str:
     issued = str(int(time.time()))
     nonce = secrets.token_urlsafe(12)
     payload = f"{user_id}.{issued}.{nonce}"
-    signature = _sign(payload)
-    return f"{payload}.{signature}"
+    return f"{payload}.{_sign(payload)}"
 
 
 def read_session_token(token: str) -> Optional[dict]:
-    parts = str(token or "").split(".")
+    """
+    Validate a session token and return the owning user dict, or None.
 
+    Validation steps:
+      1. Correct structure (4 dot-separated parts).
+      2. HMAC signature matches (constant-time comparison).
+      3. Token has not expired.
+      4. User still exists in the database.
+    """
+    parts = str(token or "").split(".")
     if len(parts) != 4:
         return None
 
@@ -215,10 +258,16 @@ def read_session_token(token: str) -> Optional[dict]:
     return get_user_by_id(user_id)
 
 
-def get_current_user_optional(request: Request) -> Optional[dict]:
-    cached = getattr(request.state, "user", None)
+# ─────────────────────────────────────────────────────────────────────────────
+# Request-level helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-    if cached:
+
+def get_current_user_optional(request: Request) -> Optional[dict]:
+    """Return the authenticated user for this request, or None."""
+    # Cache on request.state so we only hit the DB once per request.
+    cached = getattr(request.state, "user", None)
+    if cached is not None:
         return cached
 
     token = request.cookies.get(AUTH_COOKIE_NAME, "")
@@ -228,16 +277,38 @@ def get_current_user_optional(request: Request) -> Optional[dict]:
 
 
 def require_user(request: Request) -> dict:
+    """
+    Return the authenticated user, or raise AuthError.
+
+    Callers (route handlers) should catch AuthError and convert it to
+    an HTTP 401 response, or register a global exception handler.
+    """
     user = get_current_user_optional(request)
-
     if not user:
-        raise PermissionError("Authentication required.")
-
+        raise AuthError("Authentication required.")
     return user
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HTML rendering helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def _e(value) -> str:
+    """HTML-escape a value for safe embedding in attribute or text nodes."""
     return html.escape(str(value or ""))
+
+
+def _set_session_cookie(response, token: str) -> None:
+    """Attach the session cookie to *response* with consistent settings."""
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite="lax",
+        max_age=SESSION_MAX_AGE_SECONDS,
+    )
 
 
 def _auth_page(title: str, body: str) -> HTMLResponse:
@@ -351,15 +422,13 @@ button.main-btn,.btn{{
 <script>
 function togglePassword(id, btnId) {{
   const input = document.getElementById(id);
-  const btn = document.getElementById(btnId);
-
+  const btn   = document.getElementById(btnId);
   if (!input || !btn) return;
-
   if (input.type === "password") {{
-    input.type = "text";
+    input.type   = "text";
     btn.textContent = "Hide";
   }} else {{
-    input.type = "password";
+    input.type   = "password";
     btn.textContent = "Show";
   }}
 }}
@@ -373,7 +442,6 @@ function togglePassword(id, btnId) {{
 
 def _login_form(error: str = "", email: str = "") -> HTMLResponse:
     err = f'<div class="flash-err">{_e(error)}</div>' if error else ""
-
     return _auth_page("Login – BIMPruef", f"""
 <div class="card">
   <h1>BIMPruef Login</h1>
@@ -385,8 +453,10 @@ def _login_form(error: str = "", email: str = "") -> HTMLResponse:
 
     <label>Password</label>
     <div class="password-wrap">
-      <input id="login-password" type="password" name="password" required autocomplete="current-password">
-      <button id="login-password-btn" class="show-password-btn" type="button" onclick="togglePassword('login-password','login-password-btn')">Show</button>
+      <input id="login-password" type="password" name="password" required
+             autocomplete="current-password">
+      <button id="login-password-btn" class="show-password-btn" type="button"
+              onclick="togglePassword('login-password','login-password-btn')">Show</button>
     </div>
 
     <button class="main-btn" type="submit">Sign in</button>
@@ -398,9 +468,12 @@ def _login_form(error: str = "", email: str = "") -> HTMLResponse:
 </div>""")
 
 
-def _signup_form(error: str = "", email: str = "", invite_code: str = "") -> HTMLResponse:
+def _signup_form(
+    error: str = "",
+    email: str = "",
+    invite_code: str = "",
+) -> HTMLResponse:
     err = f'<div class="flash-err">{_e(error)}</div>' if error else ""
-
     return _auth_page("Create account – BIMPruef", f"""
 <div class="card">
   <h1>Create account</h1>
@@ -408,15 +481,18 @@ def _signup_form(error: str = "", email: str = "", invite_code: str = "") -> HTM
   {err}
   <form method="POST" action="/auth/signup" autocomplete="on">
     <label>Invitation code</label>
-    <input type="text" name="invite_code" value="{_e(invite_code)}" required autocomplete="off">
+    <input type="text" name="invite_code" value="{_e(invite_code)}" required
+           autocomplete="off">
 
     <label>Email</label>
     <input type="email" name="email" value="{_e(email)}" required autocomplete="email">
 
     <label>Password</label>
     <div class="password-wrap">
-      <input id="signup-password" type="password" name="password" required autocomplete="new-password">
-      <button id="signup-password-btn" class="show-password-btn" type="button" onclick="togglePassword('signup-password','signup-password-btn')">Show</button>
+      <input id="signup-password" type="password" name="password" required
+             autocomplete="new-password">
+      <button id="signup-password-btn" class="show-password-btn" type="button"
+              onclick="togglePassword('signup-password','signup-password-btn')">Show</button>
     </div>
 
     <div class="hint">
@@ -433,6 +509,11 @@ def _signup_form(error: str = "", email: str = "", invite_code: str = "") -> HTM
 </div>""")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Route handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 @auth_router.get("/login")
 def login_page() -> HTMLResponse:
     return _login_form()
@@ -445,22 +526,11 @@ def login_post(
 ):
     email = normalize_email(email)
     user = authenticate_user(email, password)
-
     if not user:
         return _login_form("Invalid email or password.", email=email)
 
-    token = create_session_token(user["user_id"])
-
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        token,
-        httponly=True,
-        secure=os.environ.get("COOKIE_SECURE", "1").strip().lower() not in {"0", "false", "no"},
-        samesite="lax",
-        max_age=SESSION_MAX_AGE_SECONDS,
-    )
-
+    _set_session_cookie(response, create_session_token(user["user_id"]))
     return response
 
 
@@ -492,23 +562,17 @@ def signup_post(
 
     try:
         user = create_user(email, password)
-    except ValueError as exc:
+    except ConflictError as exc:
         return _signup_form(str(exc), email=email, invite_code=invite_code)
     except Exception as exc:
-        return _signup_form(f"Account could not be created. {exc}", email=email, invite_code=invite_code)
-
-    token = create_session_token(user["user_id"])
+        return _signup_form(
+            f"Account could not be created. {exc}",
+            email=email,
+            invite_code=invite_code,
+        )
 
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        token,
-        httponly=True,
-        secure=os.environ.get("COOKIE_SECURE", "1").strip().lower() not in {"0", "false", "no"},
-        samesite="lax",
-        max_age=SESSION_MAX_AGE_SECONDS,
-    )
-
+    _set_session_cookie(response, create_session_token(user["user_id"]))
     return response
 
 
