@@ -26,6 +26,7 @@ init_db()
 AUTH_COOKIE_NAME = "bimpruef_auth"
 SESSION_MAX_AGE_SECONDS = int(os.environ.get("AUTH_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12)))
 AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "dev-change-this-secret-key")
+SIGNUP_INVITE_CODE = os.environ.get("SIGNUP_INVITE_CODE", "16880")
 
 EMAIL_RE = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -34,9 +35,8 @@ EMAIL_RE = re.compile(
 )
 
 pwd_context = CryptContext(
-    schemes=["bcrypt"],
+    schemes=["bcrypt_sha256"],
     deprecated="auto",
-    bcrypt__truncate_error=False
 )
 
 auth_router = APIRouter(prefix="/auth")
@@ -69,6 +69,26 @@ def validate_password(password: str) -> Optional[str]:
 
     if len(password) < 6:
         return "Password must contain at least 6 characters."
+
+    checks = [
+        any(c.islower() for c in password),
+        any(c.isupper() for c in password),
+        any(c.isdigit() for c in password),
+        any(not c.isalnum() for c in password),
+    ]
+
+    if sum(checks) < 3:
+        return (
+            "Password must include at least three of: "
+            "lowercase, uppercase, number, special character."
+        )
+
+    return None
+
+
+def validate_invite_code(invite_code: str) -> Optional[str]:
+    if str(invite_code or "").strip() != SIGNUP_INVITE_CODE:
+        return "Invalid invitation code."
 
     return None
 
@@ -273,7 +293,25 @@ input{{
   outline:none;
 }}
 input:focus{{border-color:var(--accent)}}
-button,.btn{{
+.password-wrap{{position:relative}}
+.password-wrap input{{padding-right:74px}}
+.show-password-btn{{
+  position:absolute;
+  right:8px;
+  top:50%;
+  transform:translateY(-50%);
+  width:auto;
+  margin:0;
+  padding:6px 10px;
+  border-radius:6px;
+  border:1px solid var(--border);
+  background:#223a5e;
+  color:var(--text);
+  font-size:12px;
+  font-weight:600;
+  cursor:pointer;
+}}
+button.main-btn,.btn{{
   width:100%;
   padding:10px 14px;
   margin-top:18px;
@@ -304,7 +342,28 @@ button,.btn{{
   margin-top:16px;
   text-align:center;
 }}
+.hint{{
+  font-size:11px;
+  color:var(--muted);
+  margin-top:8px;
+}}
 </style>
+<script>
+function togglePassword(id, btnId) {{
+  const input = document.getElementById(id);
+  const btn = document.getElementById(btnId);
+
+  if (!input || !btn) return;
+
+  if (input.type === "password") {{
+    input.type = "text";
+    btn.textContent = "Hide";
+  }} else {{
+    input.type = "password";
+    btn.textContent = "Show";
+  }}
+}}
+</script>
 </head>
 <body>
 {body}
@@ -325,9 +384,12 @@ def _login_form(error: str = "", email: str = "") -> HTMLResponse:
     <input type="email" name="email" value="{_e(email)}" required autocomplete="email">
 
     <label>Password</label>
-    <input type="password" name="password" required autocomplete="current-password">
+    <div class="password-wrap">
+      <input id="login-password" type="password" name="password" required autocomplete="current-password">
+      <button id="login-password-btn" class="show-password-btn" type="button" onclick="togglePassword('login-password','login-password-btn')">Show</button>
+    </div>
 
-    <button type="submit">Sign in</button>
+    <button class="main-btn" type="submit">Sign in</button>
   </form>
 
   <div class="small">
@@ -336,22 +398,33 @@ def _login_form(error: str = "", email: str = "") -> HTMLResponse:
 </div>""")
 
 
-def _signup_form(error: str = "", email: str = "") -> HTMLResponse:
+def _signup_form(error: str = "", email: str = "", invite_code: str = "") -> HTMLResponse:
     err = f'<div class="flash-err">{_e(error)}</div>' if error else ""
 
     return _auth_page("Create account – BIMPruef", f"""
 <div class="card">
   <h1>Create account</h1>
-  <p>Use a valid email address and a password with at least 6 characters.</p>
+  <p>Use a valid email address, the invitation code, and a strong password.</p>
   {err}
   <form method="POST" action="/auth/signup" autocomplete="on">
+    <label>Invitation code</label>
+    <input type="text" name="invite_code" value="{_e(invite_code)}" required autocomplete="off">
+
     <label>Email</label>
     <input type="email" name="email" value="{_e(email)}" required autocomplete="email">
 
     <label>Password</label>
-    <input type="password" name="password" required autocomplete="new-password">
+    <div class="password-wrap">
+      <input id="signup-password" type="password" name="password" required autocomplete="new-password">
+      <button id="signup-password-btn" class="show-password-btn" type="button" onclick="togglePassword('signup-password','signup-password-btn')">Show</button>
+    </div>
 
-    <button type="submit">Create account</button>
+    <div class="hint">
+      Password must contain at least 6 characters and include at least three of:
+      lowercase, uppercase, number, special character.
+    </div>
+
+    <button class="main-btn" type="submit">Create account</button>
   </form>
 
   <div class="small">
@@ -398,25 +471,31 @@ def signup_page() -> HTMLResponse:
 
 @auth_router.post("/signup")
 def signup_post(
+    invite_code: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
 ):
     email = normalize_email(email)
+    invite_code = str(invite_code or "").strip()
+
+    invite_error = validate_invite_code(invite_code)
+    if invite_error:
+        return _signup_form(invite_error, email=email, invite_code=invite_code)
 
     email_error = validate_email(email)
     if email_error:
-        return _signup_form(email_error, email=email)
+        return _signup_form(email_error, email=email, invite_code=invite_code)
 
     password_error = validate_password(password)
     if password_error:
-        return _signup_form(password_error, email=email)
+        return _signup_form(password_error, email=email, invite_code=invite_code)
 
     try:
         user = create_user(email, password)
     except ValueError as exc:
-        return _signup_form(str(exc), email=email)
-    except Exception:
-        return _signup_form("Account could not be created. Please try again.", email=email)
+        return _signup_form(str(exc), email=email, invite_code=invite_code)
+    except Exception as exc:
+        return _signup_form(f"Account could not be created. {exc}", email=email, invite_code=invite_code)
 
     token = create_session_token(user["user_id"])
 
