@@ -34,8 +34,9 @@ EMAIL_RE = re.compile(
 )
 
 pwd_context = CryptContext(
-    schemes=["bcrypt_sha256"],
+    schemes=["bcrypt"],
     deprecated="auto",
+    bcrypt__truncate_error=False
 )
 
 auth_router = APIRouter(prefix="/auth")
