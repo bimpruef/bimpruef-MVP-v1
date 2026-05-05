@@ -1,239 +1,252 @@
 """
-project_storage.py – BIMPruef Projektverwaltung
+project_storage.py – BIMPruef project management
 
-Speichert Projekte als JSON im Dateisystem unter:
-  uploads/accounts/<account_id>/projects.json
-
-Jedes Projekt bekommt eine eigene Upload-Session, die an die
-bestehende session-basierte Logik (storage.py) angebunden ist.
+Stores projects in PostgreSQL.
+Each project still receives an upload session for the existing viewer/storage logic.
 """
 
-import json
-import os
 import re
 import time
 import uuid
+from datetime import datetime
 from typing import Optional
 
-from app.storage import (
-    UPLOADS_DIR,
-    create_upload_session,
-    session_exists,
-    get_session_dir,
-)
+from app.db import SessionLocal, init_db
+from app.models import Project
+from app.storage import create_upload_session, session_exists
 
-ACCOUNTS_DIR = os.path.join(UPLOADS_DIR, "accounts")
+init_db()
+
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Demo-Account (Phase 1: lokaler Einzel-Account)
-# ─────────────────────────────────────────────────────────────────────────────
-
 DEFAULT_ACCOUNT = {
-    "account_id":   "default",
-    "account_name": "foadamini",
-    "workspace":    "Default",
-    "created_at":   "2026-01-01T00:00:00",
+    "account_id": "default",
+    "account_name": "default",
+    "workspace": "Default",
+    "created_at": "2026-01-01T00:00:00",
 }
 
 
-def get_account(account_id: str = "default") -> dict:
-    return DEFAULT_ACCOUNT.copy()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Interner Dateipfad-Helfer
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _validate_safe_id(value: str, label: str) -> str:
     value = str(value or "").strip()
+
     if not SAFE_ID_RE.fullmatch(value):
-        raise ValueError(f"Ungültige {label}.")
+        raise ValueError(f"Invalid {label}.")
+
     return value
 
 
-def _safe_join(base_dir: str, *parts: str) -> str:
-    base_abs = os.path.abspath(base_dir)
-    path_abs = os.path.abspath(os.path.join(base_abs, *parts))
-    if path_abs != base_abs and not path_abs.startswith(base_abs + os.sep):
-        raise ValueError("Unsicherer Projektpfad erkannt.")
-    return path_abs
+def _dt(value) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S")
+    return str(value or "")
 
 
-def _account_dir(account_id: str) -> str:
-    account_id = _validate_safe_id(account_id, "Account-ID")
-    return _safe_join(ACCOUNTS_DIR, account_id)
+def _project_to_dict(project: Project) -> dict:
+    return {
+        "project_id": project.project_id,
+        "account_id": project.account_id,
+        "project_code": project.project_code,
+        "project_name": project.project_name,
+        "description": project.description or "",
+        "status": project.status or "active",
+        "created_at": _dt(project.created_at),
+        "updated_at": _dt(project.updated_at),
+    }
 
 
-def _projects_file(account_id: str) -> str:
-    return os.path.join(_account_dir(account_id), "projects.json")
+def get_account(account_id: str = "default") -> dict:
+    account_id = str(account_id or "default").strip()
 
-
-def _project_dir(account_id: str, project_id: str) -> str:
-    project_id = _validate_safe_id(project_id, "Projekt-ID")
-    return _safe_join(_account_dir(account_id), "projects", project_id)
-
-
-def _ensure_account_dir(account_id: str):
-    os.makedirs(_account_dir(account_id), exist_ok=True)
-    os.makedirs(_safe_join(_account_dir(account_id), "projects"), exist_ok=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Session-Mapping: project_id  ↔  session_id
-# ─────────────────────────────────────────────────────────────────────────────
-# Die bestehende Upload-/Viewer-Logik erwartet eine session_id.
-# Wir speichern die Zuordnung pro Projekt in einer kleinen Datei.
-
-def _session_map_file(account_id: str, project_id: str) -> str:
-    return os.path.join(_project_dir(account_id, project_id), "session_id.txt")
-
-
-def get_or_create_project_session(account_id: str, project_id: str) -> str:
-    """
-    Gibt die bestehende session_id eines Projekts zurück.
-    Falls noch keine existiert (oder die Session-Daten fehlen), wird eine neue
-    Session angelegt und gespeichert.
-    """
-    map_file = _session_map_file(account_id, project_id)
-
-    if os.path.exists(map_file):
-        with open(map_file, "r", encoding="utf-8") as f:
-            sid = f.read().strip()
-        if sid and session_exists(sid):
-            return sid
-
-    # Neue Session anlegen
-    sid = create_upload_session()
-    os.makedirs(os.path.dirname(map_file), exist_ok=True)
-    with open(map_file, "w", encoding="utf-8") as f:
-        f.write(sid)
-    return sid
-
-
-def get_project_session(account_id: str, project_id: str) -> Optional[str]:
-    """Gibt die gespeicherte session_id zurück (ohne neu anzulegen)."""
-    map_file = _session_map_file(account_id, project_id)
-    if not os.path.exists(map_file):
-        return None
-    with open(map_file, "r", encoding="utf-8") as f:
-        sid = f.read().strip()
-    return sid if sid else None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Projektverwaltung
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _load_projects(account_id: str) -> list:
-    path = _projects_file(account_id)
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def _save_projects(account_id: str, projects: list):
-    _ensure_account_dir(account_id)
-    path = _projects_file(account_id)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(projects, f, ensure_ascii=False, indent=2)
+    return {
+        "account_id": account_id,
+        "account_name": account_id,
+        "workspace": "Default",
+        "created_at": "2026-01-01T00:00:00",
+    }
 
 
 def list_projects(account_id: str = "default") -> list:
-    """Gibt alle Projekte des Accounts zurück (neueste zuerst)."""
-    projects = _load_projects(account_id)
-    return sorted(projects, key=lambda p: p.get("created_at", ""), reverse=True)
+    account_id = _validate_safe_id(account_id, "account_id")
+
+    with SessionLocal() as db:
+        projects = (
+            db.query(Project)
+            .filter(Project.account_id == account_id)
+            .order_by(Project.created_at.desc())
+            .all()
+        )
+        return [_project_to_dict(p) for p in projects]
 
 
 def create_project(
-    account_id:   str,
+    account_id: str,
     project_code: str,
     project_name: str,
-    description:  str = "",
+    description: str = "",
 ) -> dict:
-    """Legt ein neues Projekt an und gibt es zurück."""
-    _ensure_account_dir(account_id)
+    account_id = _validate_safe_id(account_id, "account_id")
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    project = {
-        "project_id":   str(uuid.uuid4()),
-        "account_id":   account_id,
-        "project_code": project_code.strip(),
-        "project_name": project_name.strip(),
-        "description":  description.strip(),
-        "status":       "active",
-        "created_at":   now,
-        "updated_at":   now,
-    }
+    now = datetime.utcnow()
 
-    projects = _load_projects(account_id)
-    projects.append(project)
-    _save_projects(account_id, projects)
+    project = Project(
+        project_id=str(uuid.uuid4()),
+        account_id=account_id,
+        project_code=str(project_code or "").strip(),
+        project_name=str(project_name or "").strip(),
+        description=str(description or "").strip(),
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
 
-    # Projekt-Verzeichnis anlegen
-    os.makedirs(_project_dir(account_id, project["project_id"]), exist_ok=True)
-
-    return project
+    with SessionLocal() as db:
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        return _project_to_dict(project)
 
 
 def get_project(account_id: str, project_id: str) -> Optional[dict]:
-    """Gibt ein einzelnes Projekt zurück oder None."""
-    for p in _load_projects(account_id):
-        if p["project_id"] == project_id:
-            return p
-    return None
+    account_id = _validate_safe_id(account_id, "account_id")
+    project_id = _validate_safe_id(project_id, "project_id")
+
+    with SessionLocal() as db:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.account_id == account_id,
+                Project.project_id == project_id,
+            )
+            .first()
+        )
+
+        return _project_to_dict(project) if project else None
 
 
 def update_project(
-    account_id:   str,
-    project_id:   str,
+    account_id: str,
+    project_id: str,
     project_code: Optional[str] = None,
     project_name: Optional[str] = None,
-    description:  Optional[str] = None,
-    status:       Optional[str] = None,
+    description: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> Optional[dict]:
-    """Aktualisiert ein Projekt und gibt das aktualisierte Objekt zurück."""
-    projects = _load_projects(account_id)
-    for p in projects:
-        if p["project_id"] == project_id:
-            if project_code is not None:
-                p["project_code"] = project_code.strip()
-            if project_name is not None:
-                p["project_name"] = project_name.strip()
-            if description is not None:
-                p["description"] = description.strip()
-            if status is not None:
-                p["status"] = status
-            p["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            _save_projects(account_id, projects)
-            return p
-    return None
+    account_id = _validate_safe_id(account_id, "account_id")
+    project_id = _validate_safe_id(project_id, "project_id")
+
+    with SessionLocal() as db:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.account_id == account_id,
+                Project.project_id == project_id,
+            )
+            .first()
+        )
+
+        if not project:
+            return None
+
+        if project_code is not None:
+            project.project_code = project_code.strip()
+
+        if project_name is not None:
+            project.project_name = project_name.strip()
+
+        if description is not None:
+            project.description = description.strip()
+
+        if status is not None:
+            project.status = status
+
+        project.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(project)
+
+        return _project_to_dict(project)
 
 
 def delete_project(account_id: str, project_id: str) -> bool:
-    """Löscht ein Projekt (und gibt True zurück, wenn es gefunden wurde)."""
-    import shutil
-    projects = _load_projects(account_id)
-    new_list = [p for p in projects if p["project_id"] != project_id]
-    if len(new_list) == len(projects):
-        return False
-    _save_projects(account_id, new_list)
-    # Projekt-Verzeichnis löschen
-    pdir = _project_dir(account_id, project_id)
-    if os.path.isdir(pdir):
-        shutil.rmtree(pdir, ignore_errors=True)
-    return True
+    account_id = _validate_safe_id(account_id, "account_id")
+    project_id = _validate_safe_id(project_id, "project_id")
+
+    with SessionLocal() as db:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.account_id == account_id,
+                Project.project_id == project_id,
+            )
+            .first()
+        )
+
+        if not project:
+            return False
+
+        db.delete(project)
+        db.commit()
+
+        return True
+
+
+def get_project_session(account_id: str, project_id: str) -> Optional[str]:
+    account_id = _validate_safe_id(account_id, "account_id")
+    project_id = _validate_safe_id(project_id, "project_id")
+
+    with SessionLocal() as db:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.account_id == account_id,
+                Project.project_id == project_id,
+            )
+            .first()
+        )
+
+        if not project:
+            return None
+
+        return project.session_id or None
+
+
+def get_or_create_project_session(account_id: str, project_id: str) -> str:
+    account_id = _validate_safe_id(account_id, "account_id")
+    project_id = _validate_safe_id(project_id, "project_id")
+
+    with SessionLocal() as db:
+        project = (
+            db.query(Project)
+            .filter(
+                Project.account_id == account_id,
+                Project.project_id == project_id,
+            )
+            .first()
+        )
+
+        if not project:
+            raise ValueError("Project not found.")
+
+        if project.session_id and session_exists(project.session_id):
+            return project.session_id
+
+        session_id = create_upload_session()
+        project.session_id = session_id
+        project.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return session_id
 
 
 def get_project_model_count(account_id: str, project_id: str) -> int:
-    """Gibt die Anzahl hochgeladener Modelle in einem Projekt zurück."""
     from app.storage import get_session_slots
-    sid = get_project_session(account_id, project_id)
-    if not sid or not session_exists(sid):
+
+    session_id = get_project_session(account_id, project_id)
+
+    if not session_id or not session_exists(session_id):
         return 0
-    return len(get_session_slots(sid))
+
+    return len(get_session_slots(session_id))
