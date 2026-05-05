@@ -1,11 +1,5 @@
 """
 auth.py – BIMPruef authentication module
-
-Features:
-  - Email/password sign-up and sign-in
-  - PostgreSQL-backed user storage
-  - bcrypt password hashing
-  - Signed HTTP-only session cookie
 """
 
 import hashlib
@@ -39,7 +33,11 @@ EMAIL_RE = re.compile(
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
 )
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256"],
+    deprecated="auto",
+)
+
 auth_router = APIRouter(prefix="/auth")
 
 
@@ -58,6 +56,7 @@ def validate_email(email: str) -> Optional[str]:
         return "Please enter a valid email address."
 
     local, domain = email.rsplit("@", 1)
+
     if len(local) > 64 or len(domain) > 253:
         return "Please enter a valid email address."
 
@@ -70,19 +69,6 @@ def validate_password(password: str) -> Optional[str]:
     if len(password) < 6:
         return "Password must contain at least 6 characters."
 
-    checks = [
-        any(c.islower() for c in password),
-        any(c.isupper() for c in password),
-        any(c.isdigit() for c in password),
-        any(not c.isalnum() for c in password),
-    ]
-
-    if sum(checks) < 3:
-        return (
-            "Password must include at least three of: "
-            "lowercase, uppercase, number, special character."
-        )
-
     return None
 
 
@@ -93,7 +79,11 @@ def _hash_password(password: str) -> str:
 def _verify_password(password: str, password_hash: str) -> bool:
     if not password_hash:
         return False
-    return pwd_context.verify(password, password_hash)
+
+    try:
+        return pwd_context.verify(password, password_hash)
+    except Exception:
+        return False
 
 
 def _user_to_dict(user: User) -> dict:
@@ -128,6 +118,7 @@ def create_user(email: str, password: str) -> dict:
 
     with SessionLocal() as db:
         existing = db.query(User).filter(User.email == email).first()
+
         if existing:
             raise ValueError("An account with this email already exists.")
 
@@ -176,7 +167,8 @@ def create_session_token(user_id: str) -> str:
     issued = str(int(time.time()))
     nonce = secrets.token_urlsafe(12)
     payload = f"{user_id}.{issued}.{nonce}"
-    return f"{payload}.{_sign(payload)}"
+    signature = _sign(payload)
+    return f"{payload}.{signature}"
 
 
 def read_session_token(token: str) -> Optional[dict]:
@@ -236,19 +228,81 @@ def _auth_page(title: str, body: str) -> HTMLResponse:
 <title>{_e(title)}</title>
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
-:root{{--bg:#0e0e1a;--surface:#16213e;--surface2:#1a2a4a;--border:#1e3a6e;--accent:#4fc3f7;--accent2:#e94560;--text:#d0dce8;--muted:#8aa0bd;--success:#4caf50}}
-body{{font-family:'Segoe UI',system-ui,sans-serif;background:radial-gradient(circle at top,#17244a 0,#0e0e1a 52%);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;line-height:1.5}}
-.card{{width:100%;max-width:430px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;box-shadow:0 20px 80px rgba(0,0,0,.25)}}
+:root{{
+  --bg:#0e0e1a;
+  --surface:#16213e;
+  --surface2:#1a2a4a;
+  --border:#1e3a6e;
+  --accent:#4fc3f7;
+  --accent2:#e94560;
+  --text:#d0dce8;
+  --muted:#8aa0bd;
+}}
+body{{
+  font-family:'Segoe UI',system-ui,sans-serif;
+  background:radial-gradient(circle at top,#17244a 0,#0e0e1a 52%);
+  color:var(--text);
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:24px;
+  line-height:1.5;
+}}
+.card{{
+  width:100%;
+  max-width:430px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:28px;
+  box-shadow:0 20px 80px rgba(0,0,0,.25);
+}}
 h1{{font-size:24px;font-weight:600;margin-bottom:6px}}
 p{{color:var(--muted);font-size:13px;margin-bottom:18px}}
 label{{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px}}
-input{{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:7px;font-size:14px;outline:none}}
+input{{
+  width:100%;
+  background:var(--surface2);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:10px 12px;
+  border-radius:7px;
+  font-size:14px;
+  outline:none;
+}}
 input:focus{{border-color:var(--accent)}}
-button,.btn{{width:100%;padding:10px 14px;margin-top:18px;border-radius:7px;border:1px solid var(--accent);background:var(--accent);color:#0a1a2e;font-weight:700;cursor:pointer;text-align:center;text-decoration:none;display:block}}
+button,.btn{{
+  width:100%;
+  padding:10px 14px;
+  margin-top:18px;
+  border-radius:7px;
+  border:1px solid var(--accent);
+  background:var(--accent);
+  color:#0a1a2e;
+  font-weight:700;
+  cursor:pointer;
+  text-align:center;
+  text-decoration:none;
+  display:block;
+}}
 .link{{color:var(--accent);text-decoration:none}}
 .link:hover{{text-decoration:underline}}
-.flash-err{{background:#2a0a10;border:1px solid var(--accent2);border-radius:8px;padding:10px 12px;color:#ffaaaa;font-size:13px;margin:0 0 14px}}
-.small{{font-size:12px;color:var(--muted);margin-top:16px;text-align:center}}
+.flash-err{{
+  background:#2a0a10;
+  border:1px solid var(--accent2);
+  border-radius:8px;
+  padding:10px 12px;
+  color:#ffaaaa;
+  font-size:13px;
+  margin:0 0 14px;
+}}
+.small{{
+  font-size:12px;
+  color:var(--muted);
+  margin-top:16px;
+  text-align:center;
+}}
 </style>
 </head>
 <body>
@@ -268,11 +322,16 @@ def _login_form(error: str = "", email: str = "") -> HTMLResponse:
   <form method="POST" action="/auth/login" autocomplete="on">
     <label>Email</label>
     <input type="email" name="email" value="{_e(email)}" required autocomplete="email">
+
     <label>Password</label>
     <input type="password" name="password" required autocomplete="current-password">
+
     <button type="submit">Sign in</button>
   </form>
-  <div class="small">No account yet? <a class="link" href="/auth/signup">Create account</a></div>
+
+  <div class="small">
+    No account yet? <a class="link" href="/auth/signup">Create account</a>
+  </div>
 </div>""")
 
 
@@ -282,16 +341,21 @@ def _signup_form(error: str = "", email: str = "") -> HTMLResponse:
     return _auth_page("Create account – BIMPruef", f"""
 <div class="card">
   <h1>Create account</h1>
-  <p>Use a valid email address and a strong password.</p>
+  <p>Use a valid email address and a password with at least 6 characters.</p>
   {err}
   <form method="POST" action="/auth/signup" autocomplete="on">
     <label>Email</label>
     <input type="email" name="email" value="{_e(email)}" required autocomplete="email">
+
     <label>Password</label>
     <input type="password" name="password" required autocomplete="new-password">
+
     <button type="submit">Create account</button>
   </form>
-  <div class="small">Already have an account? <a class="link" href="/auth/login">Sign in</a></div>
+
+  <div class="small">
+    Already have an account? <a class="link" href="/auth/login">Sign in</a>
+  </div>
 </div>""")
 
 
@@ -312,6 +376,7 @@ def login_post(
         return _login_form("Invalid email or password.", email=email)
 
     token = create_session_token(user["user_id"])
+
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -321,6 +386,7 @@ def login_post(
         samesite="lax",
         max_age=SESSION_MAX_AGE_SECONDS,
     )
+
     return response
 
 
@@ -348,8 +414,11 @@ def signup_post(
         user = create_user(email, password)
     except ValueError as exc:
         return _signup_form(str(exc), email=email)
+    except Exception:
+        return _signup_form("Account could not be created. Please try again.", email=email)
 
     token = create_session_token(user["user_id"])
+
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -359,6 +428,7 @@ def signup_post(
         samesite="lax",
         max_age=SESSION_MAX_AGE_SECONDS,
     )
+
     return response
 
 
