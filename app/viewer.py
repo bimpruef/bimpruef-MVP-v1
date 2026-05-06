@@ -379,18 +379,53 @@ def _brand_logo(height_px: int = 28) -> str:
 # Navigationsleiste
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _topbar(session_id: str, active: str = "", clash_params: str = "") -> str:
+def _project_url(project_id: str, area: str = "viewer", extra: str = "") -> str:
+    """Return the project-scoped UI URL for a viewer-related area."""
+    pid = _e(project_id)
+    base_map = {
+        "dashboard": f"/projects/{pid}",
+        "viewer":    f"/projects/{pid}/model",
+        "clash":     f"/projects/{pid}/model/clash",
+        "list":      f"/projects/{pid}/model/list",
+        "rulecheck": f"/projects/{pid}/model/rulecheck",
+    }
+    base = base_map.get(area, base_map["viewer"])
+    if extra:
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}{extra}"
+    return base
+
+
+def _viewer_url(session_id: str, area: str = "viewer", project_id: str = "", extra: str = "") -> str:
+    """Build a UI URL. Prefer project-scoped routes when project_id is known."""
+    if project_id:
+        return _project_url(project_id, area, extra)
     sid = _e(session_id)
-    clash_href = f"/viewer/clash/?session_id={sid}"
-    if clash_params:
-        clash_href += "&" + clash_params
+    base_map = {
+        "viewer":    f"/viewer/?session_id={sid}",
+        "clash":     f"/viewer/clash/?session_id={sid}",
+        "list":      f"/viewer/list/?session_id={sid}",
+        "rulecheck": f"/viewer/rulecheck/?session_id={sid}",
+    }
+    base = base_map.get(area, base_map["viewer"])
+    if extra:
+        base += "&" + extra
+    return base
+
+
+def _topbar(session_id: str, active: str = "", clash_params: str = "", project_id: str = "") -> str:
+    sid = _e(session_id)
+    project_back = (
+        f'<a href="{_project_url(project_id, "dashboard")}" style="padding:8px 12px;font-size:12px;color:var(--muted);text-decoration:none">← Projekt</a>'
+        if project_id else ""
+    )
     nav = [
-        ("viewer",    f"/viewer/?session_id={sid}",           "🏗 Viewer"),
-        ("clash",     clash_href,                             "⚡ Clash-Analyse"),
-        ("list",      f"/viewer/list/?session_id={sid}",      "📋 Liste"),
-        ("rulecheck", f"/viewer/rulecheck/?session_id={sid}", "✅ Rule-Check"),
+        ("viewer",    _viewer_url(session_id, "viewer", project_id),                    "🏗 Model"),
+        ("clash",     _viewer_url(session_id, "clash", project_id, clash_params),        "⚡ Clash-Analyse"),
+        ("list",      _viewer_url(session_id, "list", project_id),                      "📋 Liste"),
+        ("rulecheck", _viewer_url(session_id, "rulecheck", project_id),                 "✅ Rule-Check"),
     ]
-    items = ""
+    items = project_back
     for key, href, label in nav:
         style = (
             "padding:8px 14px;font-size:13px;border-radius:6px;"
@@ -400,12 +435,13 @@ def _topbar(session_id: str, active: str = "", clash_params: str = "") -> str:
             "color:var(--text);text-decoration:none"
         )
         items += f'<a href="{href}" style="{style}">{label}</a>'
+    context_label = f"Projekt: {_e(project_id)[:8]}…" if project_id else f"Session: {sid[:8]}…"
     return (
         f'<div style="display:flex;align-items:center;gap:4px;padding:6px 16px;'
         f'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
         f'{_brand_logo(24)}'
         f'{items}'
-        f'<span style="margin-left:auto;font-size:11px;color:var(--muted)">Session: {sid[:8]}…</span>'
+        f'<span style="margin-left:auto;font-size:11px;color:var(--muted)">{context_label}</span>'
         f'</div>'
     )
 
@@ -453,6 +489,7 @@ def viewer_file(session_id: str = Query(...), slot: int = Query(default=1)):
 @router.post("/viewer/upload/")
 async def viewer_upload(
     session_id: str = Form(default=""),
+    project_id: str = Form(default=""),
     files: list[UploadFile] = File(...),
 ):
     errors = []
@@ -489,9 +526,11 @@ async def viewer_upload(
         except Exception as exc:
             errors.append(f"'{_e(fname)}': Speicherfehler – {_e(str(exc))}")
 
-    sid       = _e(session_id)
-    err_param = ("&error=" + urllib.parse.quote("; ".join(errors))) if errors else ""
-    response = RedirectResponse(url=f"/viewer/?session_id={sid}{err_param}", status_code=303)
+    target_url = _viewer_url(session_id, "viewer", project_id)
+    if errors:
+        sep = "&" if "?" in target_url else "?"
+        target_url = f"{target_url}{sep}error={urllib.parse.quote('; '.join(errors))}"
+    response = RedirectResponse(url=target_url, status_code=303)
     # Kein bimpruef_session-Cookie mehr setzen – die Session-ID wird
     # ausschließlich im sessionStorage des Browsers verwaltet.
     return response
@@ -502,10 +541,10 @@ async def viewer_upload(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/viewer/remove/")
-async def viewer_remove(session_id: str = Form(...), slot: int = Form(...)):
+async def viewer_remove(session_id: str = Form(...), slot: int = Form(...), project_id: str = Form(default="")):
     if session_exists(session_id):
         remove_ifc_slot(session_id, slot)
-    return RedirectResponse(url=f"/viewer/?session_id={_e(session_id)}", status_code=303)
+    return RedirectResponse(url=_viewer_url(session_id, "viewer", project_id), status_code=303)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -753,7 +792,7 @@ def viewer_export_ifc(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/viewer/", response_class=HTMLResponse)
-def viewer_main(request: Request, session_id: str = Query(default=""), error: str = Query(default="")):
+def viewer_main(request: Request, session_id: str = Query(default=""), error: str = Query(default=""), project_id: str = Query(default="")):
 
     # Keine Cookie-Session-Wiederverwendung mehr.
     # Falls session_id fehlt oder ungültig → neue Session erstellen.
@@ -797,6 +836,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     <form method="post" action="/viewer/remove/" style="display:inline;margin:0"
       onsubmit="return confirm('Datei \\'{escaped_lbl}\\' wirklich schließen?')">
       <input type="hidden" name="session_id" value="{sid}">
+      <input type="hidden" name="project_id" value="{_e(project_id)}">
       <input type="hidden" name="slot" value="{s}">
       <button type="submit" title="Entfernen"
         style="padding:1px 6px;font-size:10px;background:#2a0d14;
@@ -812,6 +852,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
   <form id="upload-form" method="post" action="/viewer/upload/" enctype="multipart/form-data">
     <input type="hidden" name="session_id" value="{sid}">
+    <input type="hidden" name="project_id" value="{_e(project_id)}">
     <input type="file" id="upload-file-input" name="files" multiple accept=".ifc,.ifczip"
       style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -845,7 +886,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
 
-  {_topbar(session_id, "viewer")}
+  {_topbar(session_id, "viewer", project_id=project_id)}
   {error_html}{empty_hint}
 
   <div style="display:flex;flex:1;overflow:hidden">
@@ -2585,6 +2626,7 @@ if (searchClear) {
 def viewer_clash(
     session_id: str  = Query(...),
     tolerance: float = Query(default=0.0),
+    project_id: str  = Query(default=""),
 ):
     """
     Clash-Analyse mit frei definierbaren Vergleichsgruppen.
@@ -2607,11 +2649,11 @@ def viewer_clash(
     if len(slots) < 1:
         body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
-  {_topbar(session_id, "clash", clash_params="")}
+  {_topbar(session_id, "clash", clash_params="", project_id=project_id)}
   <div style="flex:1;overflow-y:auto;padding:16px">
     <h2 style="font-size:17px;margin-bottom:14px">⚡ Clash-Analyse</h2>
     <div class="flash-err">⚠ Bitte zuerst mindestens 1 IFC-Modell im
-      <a href="/viewer/?session_id={sid}">Viewer</a> hochladen.</div>
+      <a href="{_viewer_url(session_id, "viewer", project_id)}">Model</a> hochladen.</div>
   </div>
 </div>"""
         return _page("Clash-Analyse – BIMPruef", body)
@@ -2661,7 +2703,7 @@ def viewer_clash(
 
     body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
-  {_topbar(session_id, "clash", clash_params="")}
+  {_topbar(session_id, "clash", clash_params="", project_id=project_id)}
   <div style="flex:1;overflow-y:auto;padding:16px">
     <h2 style="font-size:17px;margin-bottom:14px">⚡ Clash-Analyse – Gruppenvergleich</h2>
 
@@ -2739,6 +2781,7 @@ def viewer_clash(
 <script>
 (function() {{
   const SESSION_ID       = {json.dumps(session_id)};
+  const PROJECT_ID       = {json.dumps(project_id)};
   const BASE_FIELD_OPTIONS = {json.dumps(field_options)};
   const OP_OPTIONS       = {json.dumps(operator_options)};
   const filterRows       = {{a: [], b: []}};
@@ -2940,7 +2983,7 @@ def viewer_clash(
       const gid2  = esc(c.global_id_2 || "");
       const sa    = c.slot_1 || slots_a[0];
       const sb    = c.slot_2 || slots_b[0];
-      const detailUrl = `/viewer/clash/detail/?session_id=${{esc(SESSION_ID)}}&slot_a=${{sa}}&slot_b=${{sb}}&gid1=${{encodeURIComponent(gid1)}}&gid2=${{encodeURIComponent(gid2)}}`;
+      const detailUrl = `/viewer/clash/detail/?session_id=${{esc(SESSION_ID)}}&slot_a=${{sa}}&slot_b=${{sb}}&gid1=${{encodeURIComponent(gid1)}}&gid2=${{encodeURIComponent(gid2)}}${{PROJECT_ID ? "&project_id=" + encodeURIComponent(PROJECT_ID) : ""}}`;
       const bcfUrl    = `/viewer/clash/bcf-single/?session_id=${{esc(SESSION_ID)}}&slot_a=${{sa}}&slot_b=${{sb}}&clash_index=${{idx}}&tolerance=${{tolerance}}`;
       const lbl1  = c.file_label_1 ? ` <span style="color:var(--muted);font-size:10px">(${{esc(c.file_label_1)}})</span>` : "";
       const lbl2  = c.file_label_2 ? ` <span style="color:var(--muted);font-size:10px">(${{esc(c.file_label_2)}})</span>` : "";
@@ -3161,6 +3204,7 @@ def viewer_clash_detail(
     slot_b: int     = Query(...),
     gid1: str       = Query(...),
     gid2: str       = Query(...),
+    project_id: str = Query(default=""),
 ):
     if not session_exists(session_id):
         return _page("Fehler",
@@ -3186,10 +3230,7 @@ def viewer_clash_detail(
             f'label:{repr(label_b)},slot:{slot_b},color:{repr(col_b)}}}'
         )
 
-    back_url = (
-        f"/viewer/clash/?session_id={sid}"
-        f"&slot_a={slot_a}&slot_b={slot_b}&run=1"
-    )
+    back_url = _viewer_url(session_id, "clash", project_id, f"slot_a={slot_a}&slot_b={slot_b}&run=1")
 
     body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
