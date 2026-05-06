@@ -342,14 +342,14 @@ def list_export_excel(
 # Haupt-Seite des List-Moduls
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _topbar_list(session_id: str) -> str:
-    """Importiert den Topbar aus viewer und rendert ihn mit 'list' als aktivem Tab."""
+def _topbar_list(session_id: str, project_id: str = "") -> str:
+    """Rendert die gemeinsame projektfähige Viewer-Navigation."""
     from app.viewer import _topbar
-    return _topbar(session_id, active="list")
+    return _topbar(session_id, active="list", project_id=project_id)
 
 
 @list_router.get("/viewer/list/", response_class=HTMLResponse)
-def viewer_list(session_id: str = Query(...)):
+def viewer_list(session_id: str = Query(...), project_id: str = Query(default="")):
     from app.viewer import _page
 
     if not session_exists(session_id):
@@ -358,14 +358,16 @@ def viewer_list(session_id: str = Query(...)):
             '<h2>Session nicht gefunden</h2><a href="/">← Start</a></div>')
 
     sid   = _e(session_id)
+    from app.viewer import _viewer_url
+    _viewer_url = _viewer_url(session_id, "viewer", project_id)
     slots = get_session_slots(session_id)
 
     if not slots:
         body = f"""
-{_topbar_list(session_id)}
+{_topbar_list(session_id, project_id)}
 <div style="padding:40px;text-align:center;color:var(--muted)">
   <p style="font-size:15px">Keine Modelle geladen. Bitte zuerst IFC-Dateien hochladen.</p>
-  <a href="/viewer/?session_id={sid}" class="btn btn-primary"
+  <a href="{_viewer_url}" class="btn btn-primary"
     style="margin-top:16px;display:inline-block;text-decoration:none">
     ← Zum Viewer
   </a>
@@ -386,7 +388,7 @@ def viewer_list(session_id: str = Query(...)):
 </label>"""
 
     body = f"""
-{_topbar_list(session_id)}
+{_topbar_list(session_id, project_id)}
 
 <div style="display:flex;flex-direction:column;height:calc(100vh - 47px);overflow:hidden">
 
