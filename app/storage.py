@@ -339,16 +339,28 @@ def load_clash_cache(
 
 
 def cleanup_old_sessions() -> None:
-    """Delete upload sessions older than SESSION_MAX_AGE_HOURS hours."""
+    """Delete old anonymous upload sessions, but keep project sessions persistent."""
     if not os.path.isdir(UPLOADS_DIR):
         return
 
     cutoff = time.time() - (SESSION_MAX_AGE_HOURS * 3600)
 
+    protected_project_sessions: set[str] = set()
+    try:
+        from app.project_storage import get_all_project_session_ids
+        protected_project_sessions = get_all_project_session_ids()
+    except Exception:
+        # Cleanup must never break app startup because the database is temporarily
+        # unavailable. In that case we simply skip deleting project-protected IDs.
+        protected_project_sessions = set()
+
     for entry in os.listdir(UPLOADS_DIR):
         # Only remove UUID-named upload sessions. Persistent account/project
         # metadata lives under uploads/accounts and must never be cleaned here.
-        if not SESSION_ID_RE.fullmatch(entry.lower()):
+        entry_id = entry.lower()
+        if not SESSION_ID_RE.fullmatch(entry_id):
+            continue
+        if entry_id in protected_project_sessions or entry in protected_project_sessions:
             continue
         session_dir = _safe_join(UPLOADS_DIR, entry)
         if not os.path.isdir(session_dir):
