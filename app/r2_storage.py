@@ -1,5 +1,9 @@
 """
 r2_storage.py – Cloudflare R2 storage helper for BIMPruef
+
+This module provides a small S3-compatible wrapper around Cloudflare R2.
+It is used for uploading, downloading, checking and deleting files from
+the configured R2 bucket.
 """
 
 import os
@@ -9,34 +13,48 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-R2_ENDPOINT_URL = os.environ.get("R2_ENDPOINT_URL", "").strip()
-R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "").strip()
-R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
-R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "").strip()
+def _get_env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def get_r2_config() -> dict:
+    return {
+        "endpoint_url": _get_env("R2_ENDPOINT_URL"),
+        "access_key_id": _get_env("R2_ACCESS_KEY_ID"),
+        "secret_access_key": _get_env("R2_SECRET_ACCESS_KEY"),
+        "bucket_name": _get_env("R2_BUCKET_NAME"),
+    }
 
 
 def r2_enabled() -> bool:
-    return all(
-        [
-            R2_ENDPOINT_URL,
-            R2_ACCESS_KEY_ID,
-            R2_SECRET_ACCESS_KEY,
-            R2_BUCKET_NAME,
-        ]
-    )
+    config = get_r2_config()
+    return all(config.values())
 
 
 def get_r2_client():
-    if not r2_enabled():
-        raise RuntimeError("Cloudflare R2 is not configured.")
+    config = get_r2_config()
+
+    missing = [key for key, value in config.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Cloudflare R2 is not configured. Missing values: "
+            + ", ".join(missing)
+        )
 
     return boto3.client(
         "s3",
-        endpoint_url=R2_ENDPOINT_URL,
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        endpoint_url=config["endpoint_url"],
+        aws_access_key_id=config["access_key_id"],
+        aws_secret_access_key=config["secret_access_key"],
         region_name="auto",
     )
+
+
+def get_r2_bucket_name() -> str:
+    bucket_name = _get_env("R2_BUCKET_NAME")
+    if not bucket_name:
+        raise RuntimeError("R2_BUCKET_NAME is not configured.")
+    return bucket_name
 
 
 def upload_file_to_r2(
@@ -44,34 +62,68 @@ def upload_file_to_r2(
     storage_key: str,
     content_type: str = "application/octet-stream",
 ) -> None:
+    """
+    Upload a local file to Cloudflare R2.
+    """
+    if not local_path:
+        raise ValueError("local_path is required.")
+
+    if not storage_key:
+        raise ValueError("storage_key is required.")
+
+    local_file = Path(local_path)
+
+    if not local_file.exists() or not local_file.is_file():
+        raise FileNotFoundError(f"Local file not found: {local_path}")
+
     client = get_r2_client()
+    bucket_name = get_r2_bucket_name()
 
     client.upload_file(
-        Filename=local_path,
-        Bucket=R2_BUCKET_NAME,
+        Filename=str(local_file),
+        Bucket=bucket_name,
         Key=storage_key,
         ExtraArgs={"ContentType": content_type},
     )
 
 
 def download_file_from_r2(storage_key: str, local_path: str) -> None:
-    client = get_r2_client()
+    """
+    Download an object from Cloudflare R2 to a local path.
+    """
+    if not storage_key:
+        raise ValueError("storage_key is required.")
 
-    Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+    if not local_path:
+        raise ValueError("local_path is required.")
+
+    client = get_r2_client()
+    bucket_name = get_r2_bucket_name()
+
+    destination = Path(local_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
 
     client.download_file(
-        Bucket=R2_BUCKET_NAME,
+        Bucket=bucket_name,
         Key=storage_key,
-        Filename=local_path,
+        Filename=str(destination),
     )
 
 
 def delete_file_from_r2(storage_key: str) -> None:
+    """
+    Delete an object from Cloudflare R2.
+    Missing objects are ignored.
+    """
+    if not storage_key:
+        return
+
     client = get_r2_client()
+    bucket_name = get_r2_bucket_name()
 
     try:
         client.delete_object(
-            Bucket=R2_BUCKET_NAME,
+            Bucket=bucket_name,
             Key=storage_key,
         )
     except ClientError:
@@ -79,11 +131,18 @@ def delete_file_from_r2(storage_key: str) -> None:
 
 
 def object_exists_in_r2(storage_key: str) -> bool:
+    """
+    Return True if an object exists in Cloudflare R2.
+    """
+    if not storage_key:
+        return False
+
     client = get_r2_client()
+    bucket_name = get_r2_bucket_name()
 
     try:
         client.head_object(
-            Bucket=R2_BUCKET_NAME,
+            Bucket=bucket_name,
             Key=storage_key,
         )
         return True
