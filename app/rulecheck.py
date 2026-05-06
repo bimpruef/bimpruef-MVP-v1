@@ -518,33 +518,10 @@ def _brand_logo(height_px: int = 28) -> str:
     )
 
 
-def _topbar(session_id: str, active: str = "") -> str:
-    """Navigationsleiste – erweitert um den Rule-Check-Menüpunkt."""
-    sid = _e(session_id)
-    nav = [
-        ("viewer",     f"/viewer/?session_id={sid}",           "🏗 Viewer"),
-        ("clash",      f"/viewer/clash/?session_id={sid}",     "⚡ Clash-Analyse"),
-        ("list",       f"/viewer/list/?session_id={sid}",      "📋 Liste"),
-        ("rulecheck",  f"/viewer/rulecheck/?session_id={sid}", "✅ Rule-Check"),
-    ]
-    items = ""
-    for key, href, label in nav:
-        style = (
-            "padding:8px 14px;font-size:13px;border-radius:6px;"
-            "color:var(--accent);border-bottom:2px solid var(--accent);text-decoration:none"
-            if active == key else
-            "padding:8px 14px;font-size:13px;border-radius:6px;"
-            "color:var(--text);text-decoration:none"
-        )
-        items += f'<a href="{href}" style="{style}">{label}</a>'
-    return (
-        f'<div style="display:flex;align-items:center;gap:4px;padding:6px 16px;'
-        f'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
-        f'{_brand_logo(24)}'
-        f'{items}'
-        f'<span style="margin-left:auto;font-size:11px;color:var(--muted)">Session: {sid[:8]}…</span>'
-        f'</div>'
-    )
+def _topbar(session_id: str, active: str = "", project_id: str = "") -> str:
+    """Rendert die gemeinsame projektfähige Viewer-Navigation."""
+    from app.viewer import _topbar as viewer_topbar
+    return viewer_topbar(session_id, active=active, project_id=project_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,12 +529,12 @@ def _topbar(session_id: str, active: str = "") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @rulecheck_router.get("/viewer/rulecheck/")
-def viewer_rulecheck(session_id: str = Query(...)):
+def viewer_rulecheck(session_id: str = Query(...), project_id: str = Query(default="")):
     """Zeigt die Rule-Check-Konfigurationsseite."""
 
     if not session_exists(session_id):
         return _page("Rule-Check – BIMPruef", f"""
-        {_topbar('', 'rulecheck')}
+        {_topbar('', 'rulecheck', project_id)}
         <div style="padding:32px 24px">
           <div class="flash-err">Session nicht gefunden. Bitte Datei erneut hochladen.</div>
         </div>""")
@@ -609,7 +586,7 @@ def viewer_rulecheck(session_id: str = Query(...)):
     rules_html += '</div>'
 
     body = f"""
-{_topbar(session_id, "rulecheck")}
+{_topbar(session_id, "rulecheck", project_id)}
 
 <div style="max-width:900px;margin:32px auto;padding:0 24px">
 
@@ -686,6 +663,7 @@ def viewer_rulecheck(session_id: str = Query(...)):
 
 <script>
 const SESSION_ID = {json.dumps(session_id)};
+const PROJECT_ID = {json.dumps(project_id)};
 let _allResults = [];
 let _currentFilter = 'all';
 
