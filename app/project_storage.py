@@ -261,6 +261,22 @@ def get_or_create_project_session(account_id: str, project_id: str) -> str:
         return session_id
 
 
+
+
+def get_all_project_session_ids() -> set[str]:
+    """Return all upload session IDs currently attached to projects.
+
+    Storage cleanup uses this to avoid deleting persistent project models.
+    """
+    with SessionLocal() as db:
+        rows = (
+            db.query(Project.session_id)
+            .filter(Project.session_id.isnot(None))
+            .all()
+        )
+        return {str(row[0]) for row in rows if row and row[0]}
+
+
 def get_project_model_count(account_id: str, project_id: str) -> int:
     """Return the number of IFC models uploaded to the project's session."""
     from app.storage import get_session_slots  # local import avoids circular
