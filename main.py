@@ -1,20 +1,35 @@
 """
 main.py – BIMPruef FastAPI-Applikation
 
-Neue Struktur:
+Primäre Struktur (projects_router):
   /                             → Account-/Projektübersicht
-  /projects/new                 → Neues Projekt
+  /projects/new                 → Neues Projekt anlegen
   /projects/create              → Projekt erstellen (POST)
   /projects/{id}                → Projekt-Dashboard
-  /projects/{id}/model          → Weiterleitung zum Viewer mit Projekt-Session
-  /projects/{id}/…              → weitere Modul-Routen (Platzhalter)
+  /projects/{id}/model          → Integrierter 3D-Viewer (kein Redirect mehr)
+  /projects/{id}/model/upload   → IFC hochladen
+  /projects/{id}/model/remove   → Slot entfernen
+  /projects/{id}/model/clash    → Clash-Analyse
+  /projects/{id}/model/clash/…  → Clash-Detail / BCF
+  /projects/{id}/model/list     → Elementliste
+  /projects/{id}/model/rulecheck → Rule-Check
+  /projects/{id}/documents|issues|todo|checking|settings
 
-  Legacy-Routen bleiben erhalten:
-  /viewer/                      → 3D-Viewer
-  /viewer/upload/               → Upload
-  /viewer/clash/                → Clash-Analyse
-  /viewer/list/                 → Elementliste
-  /viewer/rulecheck/            → Rule-Check
+Technische API-Endpunkte (viewer_router / list_router / rulecheck_router):
+  /viewer/file/                 → IFC-Datei ausliefern (von Viewer-JS benötigt)
+  /viewer/ai-chat/              → KI-Assistent
+  /viewer/clash/bcf/            → BCF-Export (Legacy-Kompatibilität)
+  /viewer/list/data/            → JSON-Daten-API Elementliste
+  /viewer/list/export/          → Excel-Export Elementliste
+  /viewer/rulecheck/run/        → Rule-Check ausführen (JSON)
+  /viewer/rulecheck/export/     → Rule-Check-Export
+
+  Legacy-Routen (weiterhin verfügbar):
+  /viewer/                      → 3D-Viewer standalone
+  /viewer/upload/               → Upload standalone
+  /viewer/clash/                → Clash-Analyse standalone
+  /viewer/list/                 → Elementliste standalone
+  /viewer/rulecheck/            → Rule-Check standalone
   /session/{id}                 → Session-Dashboard (Legacy)
   /objects/                     → Objektliste (Legacy)
   /compare-elements/            → Elementvergleich (Legacy)
@@ -407,13 +422,20 @@ async def session_delete_endpoint(request: Request):
         session_id = request.query_params.get("session_id", "").strip()
 
     if session_id:
-        # Nur löschen, wenn diese Session keinem Projekt zugeordnet ist
-        from app.project_storage import _projects_file, _load_projects, get_project_session, ACCOUNT_ID
-        project_sessions = set()
-        for p in _load_projects(ACCOUNT_ID):
-            sid = get_project_session(ACCOUNT_ID, p["project_id"])
-            if sid:
-                project_sessions.add(sid)
+        # Nur löschen, wenn diese Session keinem Projekt zugeordnet ist.
+        try:
+            from app.auth import get_current_user_optional
+            from app.project_storage import list_projects, get_project_session
+            user = get_current_user_optional(request)
+            account_id = user["user_id"] if user else None
+            project_sessions: set = set()
+            if account_id:
+                for p in list_projects(account_id):
+                    sid = get_project_session(account_id, p["project_id"])
+                    if sid:
+                        project_sessions.add(sid)
+        except Exception:
+            project_sessions = set()
 
         if session_id not in project_sessions:
             delete_session(session_id)
