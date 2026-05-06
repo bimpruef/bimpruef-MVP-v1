@@ -30,6 +30,7 @@ SESSION_MAX_AGE_SECONDS = int(
 )
 AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "dev-change-this-secret-key")
 SIGNUP_INVITE_CODE = os.environ.get("SIGNUP_INVITE_CODE", "16880")
+INVITE_REQUEST_EMAIL = os.environ.get("INVITE_REQUEST_EMAIL", "BIMPruef@gmail.com")
 
 # Whether to set the Secure flag on the session cookie.
 # Default is True; set COOKIE_SECURE=0 / false / no to disable (dev only).
@@ -418,6 +419,29 @@ button.main-btn,.btn{{
   color:var(--muted);
   margin-top:8px;
 }}
+.invite-info{{
+  background:rgba(79,195,247,.08);
+  border:1px solid rgba(79,195,247,.35);
+  border-radius:10px;
+  padding:12px 14px;
+  margin:14px 0 16px;
+  font-size:12px;
+  color:var(--text);
+}}
+.invite-info strong{{
+  color:var(--text);
+}}
+.invite-info a{{
+  color:var(--accent);
+  font-weight:700;
+  text-decoration:none;
+}}
+.invite-info a:hover{{text-decoration:underline}}
+.invite-info-title{{
+  font-weight:700;
+  margin-bottom:4px;
+  color:var(--accent);
+}}
 </style>
 <script>
 function togglePassword(id, btnId) {{
@@ -440,12 +464,26 @@ function togglePassword(id, btnId) {{
 </html>""")
 
 
+def _invite_request_notice() -> str:
+    mail = _e(INVITE_REQUEST_EMAIL)
+    return f"""
+  <div class="invite-info">
+    <div class="invite-info-title">Need an invitation code?</div>
+    <div>
+      Invitation codes are not generated automatically. Please send a personal
+      email request to <a href="mailto:{mail}">{mail}</a>. Your request will be
+      reviewed manually, and the code will be sent to you by email afterwards.
+    </div>
+  </div>"""
+
+
 def _login_form(error: str = "", email: str = "") -> HTMLResponse:
     err = f'<div class="flash-err">{_e(error)}</div>' if error else ""
     return _auth_page("Login – BIMPruef", f"""
 <div class="card">
   <h1>BIMPruef Login</h1>
   <p>Sign in with your email and password to access your projects.</p>
+  {_invite_request_notice()}
   {err}
   <form method="POST" action="/auth/login" autocomplete="on">
     <label>Email</label>
@@ -477,7 +515,8 @@ def _signup_form(
     return _auth_page("Create account – BIMPruef", f"""
 <div class="card">
   <h1>Create account</h1>
-  <p>Use a valid email address, the invitation code, and a strong password.</p>
+  <p>Use your valid email address, your invitation code, and a strong password.</p>
+  {_invite_request_notice()}
   {err}
   <form method="POST" action="/auth/signup" autocomplete="on">
     <label>Invitation code</label>
