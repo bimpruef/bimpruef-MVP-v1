@@ -26,7 +26,21 @@ class User(Base):
     user_id = Column(String(64), primary_key=True, index=True)
     email = Column(String(254), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+
+    # Optional persönliche Account-Daten. Diese Felder gehören direkt zum
+    # User/Account und werden zusammen mit dem Account gelöscht.
+    full_name = Column(String(255), default="", nullable=False)
+    company = Column(String(255), default="", nullable=False)
+    role_title = Column(String(255), default="", nullable=False)
+    phone = Column(String(80), default="", nullable=False)
+    account_notes = Column(Text, default="", nullable=False)
+
     created_at = Column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+    )
+    updated_at = Column(
         DateTime(timezone=True),
         default=_utcnow,
         nullable=False,
