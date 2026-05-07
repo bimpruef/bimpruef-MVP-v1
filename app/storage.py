@@ -184,14 +184,17 @@ def _download_from_r2_safely(storage_key: str, local_path: str) -> bool:
         return False
 
 
-def _delete_from_r2_safely(storage_key: str) -> None:
+def _delete_from_r2_safely(storage_key: str, strict: bool = False) -> None:
     if not _r2_available() or delete_file_from_r2 is None:
+        if strict:
+            raise StorageError("Cloudflare R2 ist nicht konfiguriert; Dateien können nicht sicher gelöscht werden.")
         return
 
     try:
         delete_file_from_r2(storage_key)
-    except Exception:
-        pass
+    except Exception as exc:
+        if strict:
+            raise StorageError(f"R2-Objekt konnte nicht gelöscht werden: {storage_key} ({exc})") from exc
 
 
 def _restore_slot_ifc_from_r2_if_missing(session_id: str, slot: int) -> bool:
@@ -696,7 +699,7 @@ def cleanup_old_sessions() -> None:
             shutil.rmtree(session_dir, ignore_errors=True)
 
 
-def delete_session(session_id: str) -> None:
+def delete_session(session_id: str, strict: bool = False) -> None:
     """
     Löscht eine Session und alle zugehörigen lokalen Daten sofort.
 
@@ -707,8 +710,8 @@ def delete_session(session_id: str) -> None:
     session_id = validate_session_id(session_id)
 
     for slot in range(1, MAX_FILES_PER_SESSION + 1):
-        _delete_from_r2_safely(_r2_model_key(session_id, slot))
-        _delete_from_r2_safely(_r2_meta_key(session_id, slot))
+        _delete_from_r2_safely(_r2_model_key(session_id, slot), strict=strict)
+        _delete_from_r2_safely(_r2_meta_key(session_id, slot), strict=strict)
 
     session_dir = get_session_dir(session_id)
 
