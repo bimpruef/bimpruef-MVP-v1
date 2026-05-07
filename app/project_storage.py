@@ -184,7 +184,10 @@ def update_project(
 
 
 def delete_project(account_id: str, project_id: str) -> bool:
-    """Return True if the project was found and deleted, False otherwise."""
+    """Delete a project and its attached upload session from local/R2 storage.
+
+    Return True if the project was found and deleted, False otherwise.
+    """
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
 
@@ -199,6 +202,12 @@ def delete_project(account_id: str, project_id: str) -> bool:
         )
         if not project:
             return False
+
+        session_id = project.session_id
+        if session_id:
+            from app.storage import delete_session  # local import avoids circular import
+            delete_session(session_id, strict=True)
+
         db.delete(project)
         db.commit()
         return True
