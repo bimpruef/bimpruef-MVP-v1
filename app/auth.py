@@ -16,13 +16,53 @@ from typing import Optional
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from passlib.context import CryptContext
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from app.db import SessionLocal, init_db
+from app.db import SessionLocal, init_db, engine
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.models import User
 
 init_db()
+
+
+def _ensure_user_account_columns() -> None:
+    """Add optional account/profile columns for already existing databases.
+
+    SQLAlchemy create_all() creates missing tables only; it does not alter an
+    existing users table. Render PostgreSQL instances that were created before
+    this account-management release therefore need a tiny idempotent migration.
+    """
+    required_columns = {
+        "full_name": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "company": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "role_title": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "phone": "VARCHAR(80) NOT NULL DEFAULT ''",
+        "account_notes": "TEXT NOT NULL DEFAULT ''",
+        "updated_at": "TIMESTAMP WITH TIME ZONE",
+    }
+
+    try:
+        inspector = inspect(engine)
+        existing = {col["name"] for col in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            for column_name, ddl_type in required_columns.items():
+                if column_name not in existing:
+                    conn.execute(
+                        text(f"ALTER TABLE users ADD COLUMN {column_name} {ddl_type}")
+                    )
+            if "updated_at" not in existing:
+                conn.execute(
+                    text("UPDATE users SET updated_at = created_at WHERE updated_at IS NULL")
+                )
+    except Exception:
+        # The app should still be able to start locally or during tests even if
+        # the database is momentarily unavailable. Actual writes will fail with
+        # a clear DB error if the schema is still incomplete.
+        pass
+
+
+_ensure_user_account_columns()
 
 AUTH_COOKIE_NAME = "bimpruef_auth"
 SESSION_MAX_AGE_SECONDS = int(
@@ -139,7 +179,13 @@ def _user_to_dict(user: User) -> dict:
     return {
         "user_id": user.user_id,
         "email": user.email,
+        "full_name": getattr(user, "full_name", "") or "",
+        "company": getattr(user, "company", "") or "",
+        "role_title": getattr(user, "role_title", "") or "",
+        "phone": getattr(user, "phone", "") or "",
+        "account_notes": getattr(user, "account_notes", "") or "",
         "created_at": user.created_at.isoformat() if user.created_at else "",
+        "updated_at": user.updated_at.isoformat() if getattr(user, "updated_at", None) else "",
     }
 
 
@@ -200,6 +246,140 @@ def authenticate_user(email: str, password: str) -> Optional[dict]:
         if not _verify_password(password, user.password_hash):
             return None
         return _user_to_dict(user)
+
+
+def verify_user_password(user_id: str, password: str) -> bool:
+    """Return True when *password* matches the current user's password."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return False
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return False
+        return _verify_password(password, user.password_hash)
+
+
+def update_user_email(user_id: str, new_email: str, current_password: str) -> dict:
+    """Change the user's login email after validating the current password."""
+    user_id = str(user_id or "").strip()
+    new_email = normalize_email(new_email)
+
+    email_error = validate_email(new_email)
+    if email_error:
+        raise ValidationError(email_error)
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise AuthError("Account nicht gefunden.")
+        if not _verify_password(current_password, user.password_hash):
+            raise AuthError("Das bisherige Passwort ist nicht korrekt.")
+
+        duplicate = (
+            db.query(User)
+            .filter(User.email == new_email, User.user_id != user_id)
+            .first()
+        )
+        if duplicate:
+            raise ConflictError("Diese E-Mail-Adresse wird bereits verwendet.")
+
+        user.email = new_email
+        if hasattr(user, "updated_at"):
+            from datetime import datetime, timezone
+            user.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(user)
+        return _user_to_dict(user)
+
+
+def update_user_password(user_id: str, current_password: str, new_password: str) -> None:
+    """Change the user's password after validating the current password."""
+    password_error = validate_password(new_password)
+    if password_error:
+        raise ValidationError(password_error)
+
+    user_id = str(user_id or "").strip()
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise AuthError("Account nicht gefunden.")
+        if not _verify_password(current_password, user.password_hash):
+            raise AuthError("Das bisherige Passwort ist nicht korrekt.")
+
+        user.password_hash = _hash_password(new_password)
+        if hasattr(user, "updated_at"):
+            from datetime import datetime, timezone
+            user.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+
+def update_user_profile(
+    user_id: str,
+    full_name: str = "",
+    company: str = "",
+    role_title: str = "",
+    phone: str = "",
+    account_notes: str = "",
+) -> dict:
+    """Update optional personal account data."""
+    user_id = str(user_id or "").strip()
+
+    def clean(value: str, max_len: int) -> str:
+        return str(value or "").strip()[:max_len]
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise AuthError("Account nicht gefunden.")
+
+        user.full_name = clean(full_name, 255)
+        user.company = clean(company, 255)
+        user.role_title = clean(role_title, 255)
+        user.phone = clean(phone, 80)
+        user.account_notes = clean(account_notes, 3000)
+        if hasattr(user, "updated_at"):
+            from datetime import datetime, timezone
+            user.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(user)
+        return _user_to_dict(user)
+
+
+def delete_user_account(user_id: str, current_password: str) -> None:
+    """Delete user, projects and all project upload sessions.
+
+    The file/session deletion is executed before the SQL deletion so that R2
+    objects are not orphaned when the user/project rows disappear.
+    """
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        raise AuthError("Account nicht gefunden.")
+
+    from app.models import Project
+    from app.storage import delete_session
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise AuthError("Account nicht gefunden.")
+        if not _verify_password(current_password, user.password_hash):
+            raise AuthError("Das Passwort ist nicht korrekt.")
+
+        session_ids = [
+            str(row[0])
+            for row in db.query(Project.session_id)
+            .filter(Project.account_id == user_id, Project.session_id.isnot(None))
+            .all()
+            if row and row[0]
+        ]
+
+        for session_id in session_ids:
+            delete_session(session_id, strict=True)
+
+        db.delete(user)
+        db.commit()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
