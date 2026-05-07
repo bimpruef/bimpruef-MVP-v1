@@ -126,8 +126,11 @@ def delete_file_from_r2(storage_key: str) -> None:
             Bucket=bucket_name,
             Key=storage_key,
         )
-    except ClientError:
-        pass
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return
+        raise
 
 
 def object_exists_in_r2(storage_key: str) -> bool:
