@@ -18,10 +18,19 @@ Routen:
 """
 
 import html
+from urllib.parse import quote_plus
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.auth import require_user
+from app.auth import (
+    AUTH_COOKIE_NAME,
+    delete_user_account,
+    require_user,
+    update_user_email,
+    update_user_password,
+    update_user_profile,
+)
+from app.exceptions import AuthError, ConflictError, ValidationError
 
 from app.project_storage import (
     list_projects,
@@ -62,7 +71,7 @@ button:hover,.btn:hover{background:#223a5e;border-color:var(--accent);text-decor
 .btn-danger:hover{background:#6e1a2e;text-decoration:none}
 .card{background:var(--surface);border:1px solid var(--border);
   border-radius:10px;padding:20px;margin-bottom:16px}
-input[type=text],input[type=email],textarea,select{
+input[type=text],input[type=email],input[type=password],input[type=tel],textarea,select{
   background:var(--surface2);border:1px solid var(--border);color:var(--text);
   padding:8px 12px;border-radius:6px;font-size:14px;font-family:inherit;
   outline:none;transition:border-color .2s;width:100%}
@@ -118,6 +127,7 @@ def _topbar_global(account: dict) -> str:
         f'<div style="margin-left:auto;display:flex;gap:8px">'
         f'<a href="/impressum" style="font-size:11px;color:var(--muted)">Impressum</a>'
         f'<a href="/datenschutz" style="font-size:11px;color:var(--muted)">Datenschutz</a>'
+        f'<a href="/account" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none">Account</a>'
         f'<form method="POST" action="/auth/logout" style="margin:0">'
         f'<button type="submit" class="btn" style="font-size:11px;padding:3px 9px">Logout</button>'
         f'</form>'
@@ -197,7 +207,25 @@ def _account_from_request(request: Request) -> dict:
         "account_name": user["email"],
         "workspace": "Personal",
         "created_at": user.get("created_at", ""),
+        "full_name": user.get("full_name", ""),
+        "company": user.get("company", ""),
+        "role_title": user.get("role_title", ""),
+        "phone": user.get("phone", ""),
+        "account_notes": user.get("account_notes", ""),
     }
+
+
+def _flash_from_query(saved: str = "", error: str = "") -> str:
+    if error:
+        return f'<div class="flash-err">{_e(error)}</div>'
+    if saved:
+        messages = {
+            "email": "✓ E-Mail-Adresse wurde aktualisiert.",
+            "password": "✓ Passwort wurde aktualisiert.",
+            "profile": "✓ Persönliche Account-Daten wurden gespeichert.",
+        }
+        return f'<div class="flash-ok">{_e(messages.get(saved, "✓ Änderungen gespeichert."))}</div>'
+    return ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Root → Projektübersicht
@@ -265,6 +293,166 @@ def projects_home(request: Request):
     body += empty_hint + '</div>'
 
     return _page("BIMPruef – Projekte", body)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Account-Verwaltung
+# ─────────────────────────────────────────────────────────────────────────────
+
+@projects_router.get("/account", response_class=HTMLResponse)
+def account_settings(request: Request, saved: str = "", error: str = ""):
+    account = _account_from_request(request)
+    flash_html = _flash_from_query(saved=saved, error=error)
+
+    body = (
+        f'{_topbar_global(account)}'
+        '<div style="padding:28px 32px;max-width:1050px;margin:0 auto">'
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px">'
+        '<div>'
+        '<h1 style="font-size:22px;font-weight:600">Account-Verwaltung</h1>'
+        '<p style="color:var(--muted);font-size:13px;margin-top:4px">Login-Daten, persönliche Angaben und vollständige Account-Löschung.</p>'
+        '</div>'
+        '<a href="/" class="btn" style="text-decoration:none;font-size:12px">← Zur Projektübersicht</a>'
+        '</div>'
+        f'{flash_html}'
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;align-items:start">'
+
+        '<div class="card">'
+        '<h2 style="font-size:16px;margin-bottom:8px">Login-Daten ändern</h2>'
+        '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">Jede Änderung wird mit dem bisherigen Passwort bestätigt.</p>'
+        '<form method="POST" action="/account/email">'
+        '<label>Neue E-Mail-Adresse</label>'
+        f'<input type="email" name="new_email" value="{_e(account["account_name"])}" required maxlength="254" autocomplete="email">'
+        '<label>Bisheriges Passwort</label>'
+        '<input type="password" name="current_password" required autocomplete="current-password">'
+        '<button type="submit" class="btn btn-primary" style="margin-top:16px">E-Mail ändern</button>'
+        '</form>'
+        '<hr style="border:0;border-top:1px solid var(--border);margin:20px 0">'
+        '<form method="POST" action="/account/password">'
+        '<label>Bisheriges Passwort</label>'
+        '<input type="password" name="current_password" required autocomplete="current-password">'
+        '<label>Neues Passwort</label>'
+        '<input type="password" name="new_password" required autocomplete="new-password">'
+        '<div style="font-size:11px;color:var(--muted);margin-top:8px">Mindestens 6 Zeichen und mindestens drei Gruppen: Kleinbuchstaben, Großbuchstaben, Zahl, Sonderzeichen.</div>'
+        '<button type="submit" class="btn btn-primary" style="margin-top:16px">Passwort ändern</button>'
+        '</form>'
+        '</div>'
+
+        '<div class="card">'
+        '<h2 style="font-size:16px;margin-bottom:8px">Persönliche Account-Daten</h2>'
+        '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">Diese Angaben werden direkt am Account gespeichert.</p>'
+        '<form method="POST" action="/account/profile">'
+        '<label>Name</label>'
+        f'<input type="text" name="full_name" value="{_e(account.get("full_name", ""))}" maxlength="255" autocomplete="name">'
+        '<label>Büro / Firma</label>'
+        f'<input type="text" name="company" value="{_e(account.get("company", ""))}" maxlength="255" autocomplete="organization">'
+        '<label>Rolle / Funktion</label>'
+        f'<input type="text" name="role_title" value="{_e(account.get("role_title", ""))}" maxlength="255" autocomplete="organization-title">'
+        '<label>Telefon</label>'
+        f'<input type="tel" name="phone" value="{_e(account.get("phone", ""))}" maxlength="80" autocomplete="tel">'
+        '<label>Notizen / interne Angaben</label>'
+        f'<textarea name="account_notes" rows="5" maxlength="3000" style="resize:vertical">{_e(account.get("account_notes", ""))}</textarea>'
+        '<button type="submit" class="btn btn-primary" style="margin-top:16px">Account-Daten speichern</button>'
+        '</form>'
+        '</div>'
+
+        '<div class="card" style="border-color:var(--accent2)">'
+        '<h2 style="font-size:16px;margin-bottom:8px;color:#ffb3b3">Account vollständig löschen</h2>'
+        '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">Dabei werden der Account, alle Projekte, alle Projekt-Sessions und die dazugehörigen IFC-Dateien aus PostgreSQL, lokalem Cache und Cloudflare R2 gelöscht.</p>'
+        '<form method="POST" action="/account/delete" onsubmit="return confirm(\'Account wirklich endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.\')">'
+        '<label>Passwort erneut eingeben</label>'
+        '<input type="password" name="current_password" required autocomplete="current-password">'
+        '<label>Bestätigung</label>'
+        '<input type="text" name="confirm_text" required placeholder="DELETE" autocomplete="off">'
+        '<div style="font-size:11px;color:var(--muted);margin-top:8px">Schreibe DELETE in das Feld, damit versehentliches Löschen verhindert wird.</div>'
+        '<button type="submit" class="btn btn-danger" style="margin-top:16px">Account endgültig löschen</button>'
+        '</form>'
+        '</div>'
+
+        '</div>'
+        '</div>'
+    )
+    return _page("Account-Verwaltung – BIMPruef", body)
+
+
+@projects_router.post("/account/email")
+async def account_email_update(
+    request: Request,
+    new_email: str = Form(...),
+    current_password: str = Form(...),
+):
+    account = _account_from_request(request)
+    try:
+        update_user_email(account["account_id"], new_email, current_password)
+    except (AuthError, ConflictError, ValidationError) as exc:
+        return RedirectResponse(f"/account?error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f"/account?error={quote_plus('E-Mail konnte nicht geändert werden: ' + str(exc))}", status_code=303)
+    return RedirectResponse("/account?saved=email", status_code=303)
+
+
+@projects_router.post("/account/password")
+async def account_password_update(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+):
+    account = _account_from_request(request)
+    try:
+        update_user_password(account["account_id"], current_password, new_password)
+    except (AuthError, ValidationError) as exc:
+        return RedirectResponse(f"/account?error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f"/account?error={quote_plus('Passwort konnte nicht geändert werden: ' + str(exc))}", status_code=303)
+    return RedirectResponse("/account?saved=password", status_code=303)
+
+
+@projects_router.post("/account/profile")
+async def account_profile_update(
+    request: Request,
+    full_name: str = Form(default=""),
+    company: str = Form(default=""),
+    role_title: str = Form(default=""),
+    phone: str = Form(default=""),
+    account_notes: str = Form(default=""),
+):
+    account = _account_from_request(request)
+    try:
+        update_user_profile(
+            account["account_id"],
+            full_name=full_name,
+            company=company,
+            role_title=role_title,
+            phone=phone,
+            account_notes=account_notes,
+        )
+    except AuthError as exc:
+        return RedirectResponse(f"/account?error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f"/account?error={quote_plus('Account-Daten konnten nicht gespeichert werden: ' + str(exc))}", status_code=303)
+    return RedirectResponse("/account?saved=profile", status_code=303)
+
+
+@projects_router.post("/account/delete")
+async def account_delete(
+    request: Request,
+    current_password: str = Form(...),
+    confirm_text: str = Form(...),
+):
+    account = _account_from_request(request)
+    if str(confirm_text or "").strip() != "DELETE":
+        return RedirectResponse("/account?error=Bitte+DELETE+zur+Bestätigung+eingeben.", status_code=303)
+
+    try:
+        delete_user_account(account["account_id"], current_password)
+    except AuthError as exc:
+        return RedirectResponse(f"/account?error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f"/account?error={quote_plus('Account konnte nicht gelöscht werden: ' + str(exc))}", status_code=303)
+
+    response = RedirectResponse("/auth/login", status_code=303)
+    response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -370,6 +558,16 @@ def project_dashboard(request: Request, project_id: str):
         f'</div>'
     )
 
+    account_panel = (
+        f'<div class="card" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:16px">'
+        f'<div>'
+        f'<h3 style="font-size:15px;margin-bottom:4px">Account-Verwaltung</h3>'
+        f'<p style="font-size:12px;color:var(--muted)">E-Mail, Passwort, persönliche Account-Daten und vollständige Account-Löschung verwalten.</p>'
+        f'</div>'
+        f'<a href="/account" class="btn" style="text-decoration:none;white-space:nowrap">Account öffnen</a>'
+        f'</div>'
+    )
+
     body = (
         f'{_topbar_global(account)}'
         f'{_project_subnav(project_id, "dashboard")}'
@@ -386,7 +584,7 @@ def project_dashboard(request: Request, project_id: str):
     if project.get("description"):
         body += f'<p style="color:var(--muted);font-size:13px;margin-top:8px">{_e(project["description"])}</p>'
 
-    body += stat_cards + quick_links + '</div>'
+    body += stat_cards + quick_links + account_panel + '</div>'
 
     return _page(f"{pname} – BIMPruef", body)
 
