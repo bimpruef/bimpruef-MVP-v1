@@ -546,17 +546,6 @@ def project_dashboard(request: Request, project_id: str):
         f'</div>'
     )
 
-  
-    account_panel = (
-        f'<div class="card" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:16px">'
-        f'<div>'
-        f'<h3 style="font-size:15px;margin-bottom:4px">Account-Verwaltung</h3>'
-        f'<p style="font-size:12px;color:var(--muted)">E-Mail, Passwort, persönliche Account-Daten und vollständige Account-Löschung verwalten.</p>'
-        f'</div>'
-        f'<a href="/account" class="btn" style="text-decoration:none;white-space:nowrap">Account öffnen</a>'
-        f'</div>'
-    )
-
     body = (
         f'{_topbar_global(account)}'
         f'{_project_subnav(project_id, "dashboard")}'
@@ -573,7 +562,7 @@ def project_dashboard(request: Request, project_id: str):
     if project.get("description"):
         body += f'<p style="color:var(--muted);font-size:13px;margin-top:8px">{_e(project["description"])}</p>'
 
-    body += stat_cards + account_panel + '</div>'
+    body += stat_cards + '</div>'
 
     return _page(f"{pname} – BIMPruef", body)
 
