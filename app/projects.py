@@ -546,18 +546,7 @@ def project_dashboard(request: Request, project_id: str):
         f'</div>'
     )
 
-    quick_links = (
-        f'<div style="margin-top:20px">'
-        f'<h3 style="font-size:14px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Schnellzugriff</h3>'
-        f'<div style="display:flex;flex-wrap:wrap;gap:8px">'
-        f'<a href="/projects/{pid}/model" class="btn btn-primary" style="text-decoration:none">🏗 Model öffnen</a>'
-        f'<a href="/projects/{pid}/model/clash" class="btn" style="text-decoration:none">⚡ Clash-Analyse</a>'
-        f'<a href="/projects/{pid}/model/list" class="btn" style="text-decoration:none">📋 Elementliste</a>'
-        f'<a href="/projects/{pid}/model/rulecheck" class="btn" style="text-decoration:none">✅ Rule-Check</a>'
-        f'</div>'
-        f'</div>'
-    )
-
+  
     account_panel = (
         f'<div class="card" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:16px">'
         f'<div>'
@@ -584,7 +573,7 @@ def project_dashboard(request: Request, project_id: str):
     if project.get("description"):
         body += f'<p style="color:var(--muted);font-size:13px;margin-top:8px">{_e(project["description"])}</p>'
 
-    body += stat_cards + quick_links + account_panel + '</div>'
+    body += stat_cards + account_panel + '</div>'
 
     return _page(f"{pname} – BIMPruef", body)
 
