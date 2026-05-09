@@ -482,6 +482,7 @@ def _page(title: str, body: str) -> HTMLResponse:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
 {DARK_STYLES}
+<link rel="stylesheet" href="/static/bimpruef.css">
 </head>
 <body>
 {body}
