@@ -38,6 +38,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (
     HTMLResponse,
     PlainTextResponse,
@@ -68,6 +69,7 @@ from app.storage import (
     save_clash_cache,
 )
 from app.viewer import router as viewer_router
+from app.templates import _base_styles as _bp_base_styles, _footer_html as _bp_footer_html, _build_page as _bp_build_page, _render_error as _bp_render_error
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +96,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Unified UI static assets
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Middleware – Authentifizierung
@@ -106,6 +112,7 @@ async def authentication_middleware(request: Request, call_next):
         "/impressum",
         "/datenschutz",
         "/favicon.ico",
+        "/static",
         "/docs",
         "/redoc",
         "/openapi.json",
@@ -190,78 +197,19 @@ def r2_test():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _base_styles():
-    return """<style>
-body{font-family:Arial,sans-serif;margin:20px;background:#f7f7f7;color:#222}
-.container{max-width:1250px;margin:0 auto;background:white;padding:30px;
-  border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.06)}
-.box,.summary-box{background:white;padding:18px;border-radius:10px;
-  box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:20px}
-h1,h2,h3{margin-top:0}
-p{line-height:1.6}
-a.button{display:inline-block;padding:10px 16px;background:#f2f2f2;
-  border:1px solid #ccc;text-decoration:none;color:#000;border-radius:6px;
-  margin:0 10px 10px 0}
-a.button:hover{background:#e8e8e8}
-.table-wrap{background:white;padding:15px;border-radius:10px;
-  box-shadow:0 2px 8px rgba(0,0,0,0.05);overflow-x:auto;margin-bottom:20px}
-table.main-table{border-collapse:collapse;width:100%;
-  table-layout:fixed;background:white}
-.main-table th,.main-table td{border:1px solid #ddd;padding:10px;
-  vertical-align:top;text-align:left;word-wrap:break-word}
-.main-table th{background:#f2f2f2;position:sticky;top:0;z-index:1}
-.main-table tr:hover{background:#fafafa}
-.pset-block{border:1px solid #e2e2e2;border-radius:6px;padding:8px;
-  margin-bottom:8px;background:#fcfcfc}
-.pset-title{font-weight:bold;margin-bottom:6px;color:#333}
-table.prop-table{border-collapse:collapse;width:100%;font-size:12px}
-.prop-table th,.prop-table td{border:1px solid #ddd;padding:6px;
-  text-align:left;vertical-align:top}
-.prop-table th{background:#f8f8f8}
-.muted{color:#777;font-style:italic}
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.summary-item{background:#fafafa;border:1px solid #e5e5e5;border-radius:8px;padding:10px}
-input[type=text],input[type=number],input[type=file],select{
-  width:420px;max-width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px}
-button{padding:10px 16px;border:1px solid #ccc;background:#f2f2f2;
-  border-radius:6px;cursor:pointer}
-button:hover{background:#e8e8e8}
-.danger{color:#b00020;font-weight:bold}
-.success{color:green;font-weight:bold}
-pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}
-.diff-box{background:#fafafa;border:1px solid #e5e5e5;border-radius:8px;
-  padding:14px;margin-bottom:14px}
-.small{font-size:13px;color:#666}
-.info-banner{background:#fff8e1;border:1px solid #ffe082;border-radius:8px;
-  padding:10px 14px;margin-bottom:16px;font-size:13px;color:#555}
-</style>"""
+    return _bp_base_styles()
 
 
 def _footer():
-    return (
-        '<footer style="text-align:center;margin-top:40px;padding:20px 0 10px;'
-        'border-top:1px solid #e5e5e5;color:#888;font-size:13px;">'
-        '<p>BIMPruef Platform by Foad Amini · '
-        '<a href="mailto:amini.foad@gmail.com" style="color:#888">amini.foad@gmail.com</a></p>'
-        '<p><a href="/impressum" style="color:#888;margin:0 10px">Impressum</a>'
-        '<a href="/datenschutz" style="color:#888;margin:0 10px">Datenschutz</a></p>'
-        "</footer>"
-    )
+    return _bp_footer_html()
 
 
 def _build_page(title: str, body_html: str) -> HTMLResponse:
-    return HTMLResponse(
-        f"<html><head><title>{html.escape(title)}</title>{_base_styles()}</head>"
-        f'<body><div class="container">{body_html}{_footer()}</div></body></html>'
-    )
+    return _bp_build_page(title, body_html)
 
 
 def _render_error(title: str, message: str) -> HTMLResponse:
-    body = (
-        f"<h2 class='danger'>{html.escape(title)}</h2>"
-        f"<pre>{html.escape(message)}</pre>"
-        '<p><a class="button" href="/">Zurück</a></p>'
-    )
-    return _build_page(title, body)
+    return _bp_render_error(title, message)
 
 
 def _pretty_json(data) -> str:
