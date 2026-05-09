@@ -132,70 +132,66 @@ def _brand_logo(height_px: int = 28) -> str:
 
 
 def _topbar_global(account: dict) -> str:
+    email = _e(account.get("account_name", ""))
+    initials_source = str(account.get("account_name", "") or "?").split("@", 1)[0]
+    initials = "".join(part[:1].upper() for part in initials_source.replace("_", ".").split(".") if part)[:2] or "?"
     return (
-        f'<div style="display:flex;align-items:center;gap:12px;padding:8px 20px;'
-        f'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
-        f'{_brand_logo(22)}'
-        f'<span style="color:var(--muted);font-size:12px">|</span>'
-        f'<span style="font-size:12px;color:var(--muted)">Account:</span>'
-        f'<span style="font-size:13px;font-weight:600;color:var(--accent)">{_e(account["account_name"])}</span>'
-        f'<span style="color:var(--muted);font-size:12px">·</span>'
-        f'<span style="font-size:12px;color:var(--muted)">Workspace: {_e(account["workspace"])}</span>'
-        f'<div style="margin-left:auto;display:flex;gap:8px">'
-        f'<a href="/impressum" style="font-size:11px;color:var(--muted)">Impressum</a>'
-        f'<a href="/datenschutz" style="font-size:11px;color:var(--muted)">Datenschutz</a>'
-        f'<a href="/account" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none">Account</a>'
-        f'<form method="POST" action="/auth/logout" style="margin:0">'
-        f'<button type="submit" class="btn" style="font-size:11px;padding:3px 9px">Logout</button>'
-        f'</form>'
-        f'</div>'
-        f'</div>'
+        '<nav class="bp-nav">'
+        '<div class="bp-nav__inner">'
+        '<a href="/" class="bp-nav__logo"><div class="bp-nav__logo-mark">BP</div>BIMPruef</a>'
+        '<div class="bp-nav__links">'
+        '<a href="/" class="bp-nav__link bp-nav__link--active">Projekte</a>'
+        '<a href="/impressum" class="bp-nav__link">Impressum</a>'
+        '<a href="/datenschutz" class="bp-nav__link">Datenschutz</a>'
+        '</div>'
+        '<div class="bp-nav__user">'
+        f'<div class="bp-nav__avatar" title="{email}">{_e(initials)}</div>'
+        f'<span style="font-size:.8125rem;color:rgba(255,255,255,.65)">{email}</span>'
+        '<a href="/account" class="bp-btn bp-btn--ghost bp-btn--sm" style="color:rgba(255,255,255,.75)">Account</a>'
+        '<form method="POST" action="/auth/logout" style="margin:0">'
+        '<button type="submit" class="bp-btn bp-btn--ghost bp-btn--sm" style="color:rgba(255,255,255,.75)">Logout</button>'
+        '</form>'
+        '</div>'
+        '</div>'
+        '</nav>'
     )
 
 
 def _project_subnav(project_id: str, active: str) -> str:
     pid = _e(project_id)
     items = [
-        ("dashboard",  f"/projects/{pid}",             "📊 Dashboard"),
-        ("model",      f"/projects/{pid}/model",        "🏗 Model"),
-        ("documents",  f"/projects/{pid}/documents",    "📄 Documents"),
-        ("issues",     f"/projects/{pid}/issues",       "🐛 Issues"),
-        ("todo",       f"/projects/{pid}/todo",         "☑ To-do"),
-        ("checking",   f"/projects/{pid}/checking",     "✅ Checking"),
-        ("settings",   f"/projects/{pid}/settings",     "⚙ Settings"),
+        ("dashboard",  f"/projects/{pid}",             "Dashboard"),
+        ("model",      f"/projects/{pid}/model",        "Model"),
+        ("documents",  f"/projects/{pid}/documents",    "Documents"),
+        ("issues",     f"/projects/{pid}/issues",       "Issues"),
+        ("todo",       f"/projects/{pid}/todo",         "To-do"),
+        ("checking",   f"/projects/{pid}/checking",     "Checking"),
+        ("settings",   f"/projects/{pid}/settings",     "Settings"),
     ]
-    parts = []
+    links = []
     for key, href, label in items:
-        if key == active:
-            style = ("padding:8px 14px;font-size:13px;border-radius:6px;"
-                     "color:var(--accent);border-bottom:2px solid var(--accent);text-decoration:none")
-        else:
-            style = ("padding:8px 14px;font-size:13px;border-radius:6px;"
-                     "color:var(--text);text-decoration:none")
-        parts.append(f'<a href="{href}" style="{style}">{label}</a>')
-    return (
-        '<div style="display:flex;align-items:center;gap:2px;padding:4px 16px;'
-        'background:#0d1a30;border-bottom:1px solid var(--border)">'
-        + "".join(parts) + "</div>"
-    )
+        cls = "bp-tab bp-tab--active" if key == active else "bp-tab"
+        links.append(f'<a href="{href}" class="{cls}">{label}</a>')
+    return '<div class="bp-container"><div class="bp-tabs" style="margin-top:16px;margin-bottom:0">' + "".join(links) + '</div></div>'
 
 
 def _page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"""<!DOCTYPE html>
+    return HTMLResponse(f"""<!doctype html>
 <html lang="de">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_e(title)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 {GLOBAL_STYLES}
+<link rel="stylesheet" href="/static/bimpruef.css">
 </head>
 <body>
+<div class="bp-page">
 {body}
-<footer>
-  <p>BIMPruef Platform by Foad Amini &nbsp;·&nbsp;
-  <a href="/impressum">Impressum</a> &nbsp;·&nbsp;
-  <a href="/datenschutz">Datenschutz</a></p>
-</footer>
+</div>
 </body>
 </html>""")
 
