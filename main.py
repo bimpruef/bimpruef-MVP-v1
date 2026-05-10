@@ -51,7 +51,6 @@ from fastapi.responses import (
 from app.auth import auth_router, get_current_user_optional
 from app.bcf_export import create_bcf_zip_from_clashes
 from app.clash import compare_models_for_clashes
-from app.compare import compare_models
 from app.extractors import (
     build_object_rows,
     filter_objects,
@@ -236,7 +235,6 @@ def _session_nav(session_id: str) -> str:
         f'<a class="button" href="/viewer/?session_id={sid}">3D-Viewer</a>'
         f'<a class="button" href="/session/{sid}">Session-Dashboard</a>'
         f'<a class="button" href="/objects/?session_id={sid}&source=both">Objekte</a>'
-        f'<a class="button" href="/compare-elements/?session_id={sid}">Vergleich</a>'
         f'<a class="button" href="/compare-clashes/?session_id={sid}">Clash</a>'
         "</div>"
     )
@@ -359,42 +357,6 @@ def show_ifc_objects(
 
     except Exception as exc:
         return _render_error("Fehler", str(exc))
-
-
-@app.get("/compare-elements/", response_class=HTMLResponse)
-def compare_elements(session_id: str = Query(...)):
-    try:
-        loaded = load_ifc_models_from_session(session_id)
-
-        comparison = compare_models(
-            loaded["model_1"],
-            loaded["model_2"],
-            file_label_1=loaded["file_label_1"],
-            file_label_2=loaded["file_label_2"],
-        )
-
-        summary = comparison["summary"]
-
-        body = [
-            "<h1>Elementvergleich</h1>",
-            '<p><a class="button" href="/">Zurück</a></p>',
-            _session_nav(session_id),
-            '<div class="summary-box"><h3>Zusammenfassung</h3><div class="summary-grid">',
-        ]
-
-        for key, value in summary.items():
-            body.append(
-                f'<div class="summary-item"><strong>{html.escape(str(key))}</strong>'
-                f"<br>{html.escape(str(value))}</div>"
-            )
-
-        body.append("</div></div>")
-
-        return _build_page("Elementvergleich", "".join(body))
-
-    except Exception as exc:
-        return _render_error("Elementvergleich fehlgeschlagen", str(exc))
-
 
 @app.get("/compare-clashes/", response_class=HTMLResponse)
 def compare_clashes(
