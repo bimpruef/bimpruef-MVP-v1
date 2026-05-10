@@ -96,6 +96,12 @@ class Project(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    issues = relationship(
+        "ProjectIssue",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class ProjectFolder(Base):
@@ -157,3 +163,32 @@ class ProjectDocument(Base):
 
     project = relationship("Project", back_populates="documents")
     folder = relationship("ProjectFolder")
+
+
+class ProjectIssue(Base):
+    __tablename__ = "project_issues"
+
+    issue_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    source_type = Column(String(60), default="manual", nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, default="", nullable=False)
+    status = Column(String(60), default="open", nullable=False, index=True)
+    priority = Column(String(60), default="normal", nullable=False, index=True)
+
+    # JSON strings keep the schema compact and migration-friendly for the MVP.
+    # They store document references, involved elements and optional BCF/viewpoint data.
+    documents_json = Column(Text, default="[]", nullable=False)
+    elements_json = Column(Text, default="{}", nullable=False)
+    viewpoint_json = Column(Text, default="{}", nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    project = relationship("Project", back_populates="issues")
