@@ -1,6 +1,8 @@
 """
 main.py – BIMPruef FastAPI-Applikation
 
+
+
 Primäre Struktur (projects_router):
   /                              → Account-/Projektübersicht
   /projects/new                  → Neues Projekt anlegen
