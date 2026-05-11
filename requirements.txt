@@ -7,5 +7,5 @@ openpyxl>=3.1.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.9
 passlib[bcrypt]>=1.7.4
-bcrypt==4.0.1
+bcrypt==3.2.2
 boto3
