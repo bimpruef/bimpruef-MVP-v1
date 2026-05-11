@@ -12,7 +12,7 @@ from typing import Optional
 
 from app.db import SessionLocal, init_db
 from app.exceptions import NotFoundError, StorageError, ValidationError
-from app.models import Project, ProjectDocument, ProjectFolder, ProjectIssue, ProjectClashCache
+from app.models import Project, ProjectDocument, ProjectFolder, ProjectIssue
 from app.storage import create_upload_session, session_exists
 
 init_db()
@@ -23,7 +23,6 @@ SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -59,15 +58,12 @@ def _project_to_dict(project: Project) -> dict:
 # Account helpers
 # ---------------------------------------------------------------------------
 
-
 def get_account(account_id: str) -> dict:
     """
     Return a minimal account descriptor for *account_id*.
 
     The platform currently models accounts as users; this helper produces a
     lightweight dict suitable for display without loading the full User record.
-    If a richer account model is introduced later this function is the single
-    place to update.
     """
     account_id = str(account_id or "").strip()
     return {
@@ -81,9 +77,9 @@ def get_account(account_id: str) -> dict:
 # Project CRUD
 # ---------------------------------------------------------------------------
 
-
 def list_projects(account_id: str) -> list:
     account_id = _validate_safe_id(account_id, "account_id")
+
     with SessionLocal() as db:
         projects = (
             db.query(Project)
@@ -189,11 +185,12 @@ def delete_project(account_id: str, project_id: str) -> None:
 
     Deletion order:
       1. Verify that the project belongs to the current account.
-      2. Delete the attached upload/session storage from R2 and local cache.
-      3. Delete the SQL Project row.
+      2. Delete permanent project documents from R2.
+      3. Delete derived viewer/session storage from R2/local cache.
+      4. Delete SQL records for issues, documents, folders and the project.
 
-    Storage cleanup happens before SQL deletion. This prevents the dangerous
-    case where the database row is gone but R2 files remain orphaned.
+    Clash cache is not stored in PostgreSQL anymore. The last Clash result is
+    kept only in browser sessionStorage and therefore has no server-side cleanup.
     """
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
@@ -226,10 +223,10 @@ def delete_project(account_id: str, project_id: str) -> None:
                 f"Projektdokumente konnten nicht vollständig gelöscht werden: {exc}"
             ) from exc
 
-        # 2) Delete the derived viewer/session cache in R2/local storage.
+        # 2) Delete derived viewer/session cache in R2/local storage.
         if session_id:
             try:
-                from app.storage import delete_session  # local import avoids circular import
+                from app.storage import delete_session
                 delete_session(session_id, strict=True)
             except StorageError:
                 db.rollback()
@@ -240,12 +237,20 @@ def delete_project(account_id: str, project_id: str) -> None:
                     f"Viewer-Session-Dateien konnten nicht vollständig gelöscht werden: {exc}"
                 ) from exc
 
-        # 3) Delete SQL document/folder records, then the project row.
+        # 3) Delete SQL records, then the project row.
         try:
-            db.query(ProjectIssue).filter(ProjectIssue.project_id == project_id).delete(synchronize_session=False)
-            db.query(ProjectClashCache).filter(ProjectClashCache.project_id == project_id).delete(synchronize_session=False)
-            db.query(ProjectDocument).filter(ProjectDocument.project_id == project_id).delete(synchronize_session=False)
-            db.query(ProjectFolder).filter(ProjectFolder.project_id == project_id).delete(synchronize_session=False)
+            db.query(ProjectIssue).filter(
+                ProjectIssue.project_id == project_id
+            ).delete(synchronize_session=False)
+
+            db.query(ProjectDocument).filter(
+                ProjectDocument.project_id == project_id
+            ).delete(synchronize_session=False)
+
+            db.query(ProjectFolder).filter(
+                ProjectFolder.project_id == project_id
+            ).delete(synchronize_session=False)
+
             db.delete(project)
             db.commit()
         except Exception:
@@ -256,7 +261,6 @@ def delete_project(account_id: str, project_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Session management for projects
 # ---------------------------------------------------------------------------
-
 
 def get_project_session(account_id: str, project_id: str) -> Optional[str]:
     """Return the upload session ID attached to the project, or None."""
@@ -272,8 +276,10 @@ def get_project_session(account_id: str, project_id: str) -> Optional[str]:
             )
             .first()
         )
+
         if not project:
             return None
+
         return project.session_id or None
 
 
@@ -306,16 +312,16 @@ def get_or_create_project_session(account_id: str, project_id: str) -> str:
         session_id = create_upload_session()
         project.session_id = session_id
         project.updated_at = _utcnow()
+
         db.commit()
         return session_id
 
 
-
-
 def get_all_project_session_ids() -> set[str]:
-    """Return all upload session IDs currently attached to projects.
+    """
+    Return all upload session IDs currently attached to projects.
 
-    Storage cleanup uses this to avoid deleting persistent project models.
+    Storage cleanup uses this to avoid deleting persistent project model caches.
     """
     with SessionLocal() as db:
         rows = (
