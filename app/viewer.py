@@ -1,15 +1,19 @@
 """
-viewer.py  –  BIMPruef 3D-Viewer
+viewer.py – BIMPruef 3D-Viewer
 
 Routen:
-  GET  /viewer/                    → Viewer-Hauptseite (3D, ohne sichtbaren Upload im Model-Modul)
-  POST /viewer/upload/             → Legacy-Upload-Route (nicht mehr im Model-UI verlinkt)
-  POST /viewer/remove/             → Einzelne Datei aus Session entfernen
-  GET  /viewer/file/               → Rohe IFC-Datei ausliefern (immer .ifc)
-  GET  /viewer/clash/detail/       → 3D-Visualisierung eines Clash-Ergebnisses
-  GET  /viewer/clash/              → Legacy-Redirect zum Project-Clash-Modul
-  POST /viewer/element/update/     → Element-Eigenschaften (Name, Typ, PSet) aktualisieren
+  GET  /viewer/                    → Viewer-Hauptseite / reine 3D-Modellanzeige
+  POST /viewer/upload/             → Legacy-Upload-Route, nicht mehr im Project-Model-UI verlinkt
+  POST /viewer/remove/             → Einzelne Datei aus Viewer-Session entfernen
+  GET  /viewer/file/               → Rohe IFC-Datei ausliefern, immer .ifc
+  GET  /viewer/clash/detail/       → 3D-Detailansicht für zwei Clash-Elemente
+  POST /viewer/element/update/     → Element-Eigenschaften aktualisieren
   GET  /viewer/export-ifc/         → Modifizierte IFC-Datei herunterladen
+
+Wichtig:
+  Die Clash-Analyse selbst liegt nicht mehr im Viewer.
+  Neue Clash-Berechnungen laufen projektbezogen über project_clash.py.
+  BCF-Export gehört zum Issues-Modul.
 """
 
 
@@ -30,9 +34,7 @@ from app.storage import (
     get_ifc_label,
     get_ifc_path,
     get_session_slots,
-    load_clash_cache,
     remove_ifc_slot,
-    save_clash_cache,
     save_ifc_file,
     session_exists,
 )
@@ -269,7 +271,6 @@ async def viewer_ai_chat(
 
 MAX_FILE_SIZE_MB    = 500
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gemeinsame CSS-Basis
@@ -402,7 +403,6 @@ def _viewer_url(session_id: str, area: str = "viewer", project_id: str = "", ext
     sid = _e(session_id)
     base_map = {
         "viewer":    f"/viewer/?session_id={sid}",
-        "clash":     f"/viewer/clash/?session_id={sid}",
         "list":      f"/viewer/list/?session_id={sid}",
         "rulecheck": f"/viewer/rulecheck/?session_id={sid}",
     }
@@ -418,9 +418,6 @@ def _topbar(session_id: str, active: str = "", clash_params: str = "", project_i
         f'<a href="{_project_url(project_id, "dashboard")}" style="padding:8px 12px;font-size:12px;color:var(--muted);text-decoration:none">← Projekt</a>'
         if project_id else ""
     )
-    # Viewer navigation contains only pure model/viewer-related tools.
-    # Clash is intentionally removed from this UI and lives as a project module
-    # under /projects/{project_id}/clash.
     nav = [
         ("viewer",    _viewer_url(session_id, "viewer", project_id),                    "🏗 Model"),
         ("list",      _viewer_url(session_id, "list", project_id),                      "📋 Liste"),
@@ -2626,7 +2623,7 @@ if (searchClear) {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Clash-Analyse-Seite
+# Clash-Detail-Viewer (nur 2 Elemente hervorgehoben)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/viewer/clash/detail/", response_class=HTMLResponse)
@@ -2661,8 +2658,11 @@ def viewer_clash_detail(
             f'{{url:"/viewer/file/?session_id={sid}&slot={slot_b}",'
             f'label:{repr(label_b)},slot:{slot_b},color:{repr(col_b)}}}'
         )
-
-    back_url = (f"/projects/{_e(project_id)}/clash" if project_id else _viewer_url(session_id, "viewer", project_id))
+    back_url = (
+        f"/projects/{_e(project_id)}/clash"
+        if project_id
+        else f"/viewer/?session_id={sid}"
+    )
 
     body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
@@ -2776,9 +2776,6 @@ def viewer_clash_detail(
 
     return _page("Clash-Detail – BIMPruef", body)
 
-
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Legacy Clash routes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2792,19 +2789,40 @@ def viewer_clash_legacy_redirect(project_id: str = Query(default="")):
 
 @router.post("/viewer/clash/run/")
 async def viewer_clash_run_removed():
-    return JSONResponse({"error": "Die Clash-Berechnung läuft jetzt projektbezogen unter /projects/{project_id}/clash und liest direkt aus Documents."}, status_code=410)
+    return JSONResponse(
+        {
+            "error": (
+                "Die Clash-Berechnung läuft jetzt projektbezogen unter "
+                "/projects/{project_id}/clash und liest direkt aus Documents."
+            )
+        },
+        status_code=410,
+    )
 
 
 @router.get("/viewer/clash/pset-keys/")
 def viewer_clash_pset_keys_removed():
-    return JSONResponse({"pset_keys": [], "error": "Legacy-Endpoint entfernt. Project-Clash nutzt Documents als Datenquelle."}, status_code=410)
+    return JSONResponse(
+        {
+            "pset_keys": [],
+            "error": "Legacy-Endpoint entfernt. Project-Clash nutzt Documents als Datenquelle.",
+        },
+        status_code=410,
+    )
 
 
 @router.get("/viewer/clash/bcf/")
 def viewer_clash_bcf_removed():
-    return JSONResponse({"error": "BCF-Export wurde in das Issues-Modul verschoben."}, status_code=410)
+    return JSONResponse(
+        {"error": "BCF-Export wurde in das Issues-Modul verschoben."},
+        status_code=410,
+    )
 
 
 @router.get("/viewer/clash/bcf-single/")
 def viewer_clash_bcf_single_removed():
-    return JSONResponse({"error": "BCF-Export wurde in das Issues-Modul verschoben."}, status_code=410)
+    return JSONResponse(
+        {"error": "BCF-Export wurde in das Issues-Modul verschoben."},
+        status_code=410,
+    )
+

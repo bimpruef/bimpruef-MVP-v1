@@ -7,16 +7,18 @@ Unterstützt:
   - Lokaler Cache für IFC-Verarbeitung
   - Persistente IFC-Speicherung in Cloudflare R2
   - Automatische Wiederherstellung lokaler Dateien aus R2 nach Server-Restart
-  - Clash-Cache pro Session und Slot-Paar
   - Automatisches Cleanup alter temporärer Sessions (> 24 h)
 
 Wichtig:
   Render-Dateisysteme sind nicht dauerhaft. Deshalb ist der lokale uploads/
   Ordner nur ein Cache. Die dauerhafte Quelle für IFC-Dateien ist Cloudflare R2.
+
+Hinweis:
+  Clash-Ergebnisse werden nicht mehr in storage.py gespeichert. Die letzte
+  Clash-Liste wird temporär im Browser-sessionStorage gehalten.
 """
 
 import io
-import json
 import os
 import re
 import shutil
@@ -541,7 +543,6 @@ def remove_ifc_slot(session_id: str, slot: int) -> None:
       - lokale Metadatei
       - R2-IFC-Datei
       - R2-Metadatei
-      - lokale Clash-Caches, die diesen Slot betreffen
     """
     slot = validate_slot(slot)
 
@@ -558,29 +559,6 @@ def remove_ifc_slot(session_id: str, slot: int) -> None:
     _delete_from_r2_safely(_r2_model_key(session_id, slot))
     _delete_from_r2_safely(_r2_meta_key(session_id, slot))
 
-    # Remove all clash caches that involve this slot.
-    # Cache filenames follow the exact pattern clash_{a}_{b}_{tol}.json
-    # where a < b are slot numbers.
-    session_dir = get_session_dir(session_id)
-
-    if not os.path.isdir(session_dir):
-        return
-
-    cache_re = re.compile(
-        r"^clash_(?P<a>\d+)_(?P<b>\d+)_[\d.]+\.json$"
-    )
-
-    for fname in list(os.listdir(session_dir)):
-        match = cache_re.fullmatch(fname)
-
-        if match and (
-            int(match.group("a")) == slot
-            or int(match.group("b")) == slot
-        ):
-            try:
-                os.remove(_safe_join(session_dir, fname))
-            except OSError:
-                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -628,62 +606,6 @@ def read_original_filename(meta_path: str, fallback: str) -> str:
 
     return value or fallback
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Clash-Cache  (pro Session + Slot-Paar + Toleranz)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _clash_cache_path(
-    session_id: str,
-    slot_a: int,
-    slot_b: int,
-    tolerance: float,
-) -> str:
-    # Slot-Paare normalisieren (kleinerer Slot immer zuerst)
-    a, b = sorted([slot_a, slot_b])
-    key = f"clash_{a}_{b}_{tolerance:.4f}.json"
-
-    return _safe_join(get_session_dir(session_id), key)
-
-
-def save_clash_cache(
-    session_id: str,
-    tolerance: float,
-    clashes: list,
-    slot_a: int = 1,
-    slot_b: int = 2,
-) -> None:
-    path = _clash_cache_path(session_id, slot_a, slot_b, tolerance)
-
-    try:
-        os.makedirs(get_session_dir(session_id), exist_ok=True)
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(clashes, f, ensure_ascii=False, default=str)
-
-    except OSError as exc:
-        raise StorageError(
-            f"Clash-Cache konnte nicht gespeichert werden: {exc}"
-        ) from exc
-
-
-def load_clash_cache(
-    session_id: str,
-    tolerance: float,
-    slot_a: int = 1,
-    slot_b: int = 2,
-) -> Optional[list]:
-    path = _clash_cache_path(session_id, slot_a, slot_b, tolerance)
-
-    if not os.path.exists(path):
-        return None
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except (json.JSONDecodeError, OSError):
-        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -744,7 +666,6 @@ def delete_session(session_id: str, strict: bool = False) -> None:
       - alle R2-Objekte unter sessions/{session_id}/
       - alle lokalen IFC-Dateien
       - lokale Metadaten
-      - lokale Clash-Caches
       - sonstige lokale Session-Dateien
 
     strict=True wird für Projekt-/Account-Löschung verwendet. Dann wird bei
