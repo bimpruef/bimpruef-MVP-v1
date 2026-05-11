@@ -16,7 +16,12 @@ from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app.storage import get_session_slots, get_ifc_label, session_exists
-from app.extractors import get_candidate_products, extract_element_data
+from app.extractors import (
+    apply_filters as _apply_filters_from_extractors,
+    extract_element_data,
+    flatten_psets as _flatten_psets_from_extractors,
+    get_candidate_products,
+)
 
 list_router = APIRouter()
 
@@ -53,51 +58,13 @@ def _load_all_elements(session_id: str, slots: List[int]) -> list:
 
 
 def _flatten_psets(psets: dict) -> dict:
-    """Wandelt verschachtelte Psets in ein flaches Dict um: 'PsetName.PropName' → Wert"""
-    flat = {}
-    for pset_name, props in (psets or {}).items():
-        if isinstance(props, dict):
-            for prop_name, value in props.items():
-                flat[f"{pset_name}.{prop_name}"] = value
-    return flat
+    """Delegates to extractors.flatten_psets – single source of truth."""
+    return _flatten_psets_from_extractors(psets)
 
 
 def _apply_filters(elements: list, filters: list) -> list:
-    """
-    Wendet eine Liste von Filterregeln an.
-    Jeder Filter ist ein Dict mit:
-      - field:    'file_label' | 'type' | 'name' | 'global_id' | 'object_type' |
-                  'predefined_type' | 'pset:<PsetName>.<PropName>'
-      - operator: 'contains' | 'equals' | 'starts_with' | 'ends_with' | 'not_contains' | 'not_equals'
-      - value:    Suchzeichenkette (case-insensitive)
-    """
-    result = elements
-    for f in filters:
-        field    = f.get("field", "")
-        operator = f.get("operator", "contains")
-        value    = str(f.get("value", "")).strip().lower()
-        if not field or not value:
-            continue
-
-        def get_val(elem, fld=field):
-            if fld.startswith("pset:"):
-                key = fld[5:]  # "PsetName.PropName"
-                flat = _flatten_psets(elem.get("psets", {}))
-                return str(flat.get(key, "")).lower()
-            return str(elem.get(fld, "")).lower()
-
-        def matches(elem, op=operator, v=value):
-            ev = get_val(elem)
-            if op == "contains":     return v in ev
-            if op == "not_contains": return v not in ev
-            if op == "equals":       return ev == v
-            if op == "not_equals":   return ev != v
-            if op == "starts_with":  return ev.startswith(v)
-            if op == "ends_with":    return ev.endswith(v)
-            return True
-
-        result = [e for e in result if matches(e)]
-    return result
+    """Delegates to extractors.apply_filters – single source of truth."""
+    return _apply_filters_from_extractors(elements, filters)
 
 
 def _collect_all_pset_keys(elements: list) -> list:
