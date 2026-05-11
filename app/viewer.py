@@ -2808,3 +2808,12 @@ def viewer_clash_bcf_removed():
 @router.get("/viewer/clash/bcf-single/")
 def viewer_clash_bcf_single_removed():
     return JSONResponse({"error": "BCF-Export wurde in das Issues-Modul verschoben."}, status_code=410)
+
+def viewer_main(request, session_id: str, error: str = "", project_id: str = "") -> HTMLResponse:
+    """Entry point called from projects.py project_model route."""
+    from app.storage import get_session_slots
+    slots = get_session_slots(session_id)
+    return viewer_page(
+        session_id=session_id,
+        project_id=project_id,
+    )
