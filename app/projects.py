@@ -30,7 +30,7 @@ from app.auth import (
     update_user_password,
     update_user_profile,
 )
-from app.exceptions import AuthError, ConflictError, ValidationError
+from app.exceptions import AuthError, ConflictError, NotFoundError, StorageError, ValidationError
 
 from app.project_storage import (
     list_projects,
