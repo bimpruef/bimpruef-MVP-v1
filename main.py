@@ -33,8 +33,9 @@ Debug:
 
 import html
 import json
+import logging
 import os
-
+from collections import defaultdict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Query, Request, UploadFile
@@ -49,10 +50,11 @@ from fastapi.responses import (
 from app.auth import auth_router, get_current_user_optional
 from app.bcf_export import create_bcf_zip_from_clashes
 from app.clash import compare_models_for_clashes
-from app.compare import compare_models
 from app.extractors import (
     build_object_rows,
+    extract_element_data,
     filter_objects,
+    get_candidate_products,
     get_objects_from_model,
 )
 from app.ifc_loader import load_ifc_models_from_session
@@ -69,7 +71,14 @@ from app.storage import (
     save_clash_cache,
 )
 from app.viewer import router as viewer_router
-from app.templates import _base_styles as _bp_base_styles, _footer_html as _bp_footer_html, _build_page as _bp_build_page, _render_error as _bp_render_error
+from app.templates import (
+    _base_styles as _bp_base_styles,
+    _footer_html as _bp_footer_html,
+    _build_page as _bp_build_page,
+    _render_error as _bp_render_error,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +246,147 @@ def _session_nav(session_id: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Elementvergleich – eigenständige Implementierung (keine Abhängigkeit zu
+# compare.py).  Die gesamte Vergleichslogik lebt hier, nah am Endpunkt der
+# sie benötigt.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize(value):
+    """
+    Normalisiert einen Wert für einen stabilen, reihenfolgeunabhängigen
+    Vergleich, indem er als JSON mit sortierten Schlüsseln serialisiert wird.
+    """
+    try:
+        return json.loads(json.dumps(value, sort_keys=True, default=str))
+    except Exception as exc:
+        logger.warning("_normalize: Normalisierung fehlgeschlagen für %r – %s", value, exc)
+        return value
+
+
+def _build_element_index(model, file_label: str) -> tuple[dict, dict]:
+    """
+    Erstellt einen GlobalId → Element-Dict Index für alle Kandidaten-Elemente.
+
+    Gibt (index, duplicates) zurück; beide sind Dicts mit GlobalId als Schlüssel.
+    Duplikate entstehen bei fehlerhaften IFC-Dateien mit doppelten GlobalIds.
+    """
+    index: dict = {}
+    duplicates: dict = defaultdict(list)
+
+    for element in get_candidate_products(model):
+        data = extract_element_data(element, file_label=file_label)
+        gid = data.get("global_id", "")
+        if not gid:
+            continue
+
+        if gid in index:
+            duplicates[gid].append(data)
+        else:
+            index[gid] = data
+
+    return index, duplicates
+
+
+def _diff_elements(a: dict, b: dict) -> dict:
+    """
+    Gibt ein Dict mit Feldunterschieden zwischen zwei Element-Dicts zurück.
+    Ein leeres Dict bedeutet: Elemente sind identisch.
+    """
+    differences: dict = {}
+
+    for field in ("type", "name", "object_type", "predefined_type"):
+        if _normalize(a.get(field)) != _normalize(b.get(field)):
+            differences[field] = {
+                "model_1": a.get(field),
+                "model_2": b.get(field),
+            }
+
+    psets_a = _normalize(a.get("psets", {}))
+    psets_b = _normalize(b.get("psets", {}))
+    if psets_a != psets_b:
+        differences["psets"] = {
+            "model_1": psets_a,
+            "model_2": psets_b,
+        }
+
+    return differences
+
+
+def _run_element_comparison(
+    model1,
+    model2,
+    file_label_1: str = "Modell 1",
+    file_label_2: str = "Modell 2",
+) -> dict:
+    """
+    Vergleicht zwei IFC-Modelle anhand der GlobalId und gibt ein strukturiertes
+    Ergebnis zurück.
+
+    Rückgabe-Keys:
+        summary               – Elementzähler je Kategorie
+        missing_in_model2     – nur in Modell 1 vorhandene Elemente
+        new_in_model2         – nur in Modell 2 vorhandene Elemente
+        changed               – in beiden vorhanden, aber unterschiedlich
+        unchanged             – in beiden vorhanden und identisch
+        duplicates            – doppelte GlobalIds je Modell
+    """
+    index1, duplicates1 = _build_element_index(model1, file_label=file_label_1)
+    index2, duplicates2 = _build_element_index(model2, file_label=file_label_2)
+
+    gids1 = set(index1)
+    gids2 = set(index2)
+
+    missing_in_model2: list = []
+    new_in_model2: list = []
+    changed: list = []
+    unchanged: list = []
+
+    for gid in sorted(gids1 - gids2):
+        missing_in_model2.append(index1[gid])
+
+    for gid in sorted(gids2 - gids1):
+        new_in_model2.append(index2[gid])
+
+    for gid in sorted(gids1 & gids2):
+        a = index1[gid]
+        b = index2[gid]
+        diffs = _diff_elements(a, b)
+
+        if diffs:
+            changed.append(
+                {
+                    "global_id": gid,
+                    "model_1": a,
+                    "model_2": b,
+                    "differences": diffs,
+                }
+            )
+        else:
+            unchanged.append(a)
+
+    return {
+        "summary": {
+            "model_1_count": len(index1),
+            "model_2_count": len(index2),
+            "missing_in_model2": len(missing_in_model2),
+            "new_in_model2": len(new_in_model2),
+            "changed": len(changed),
+            "unchanged": len(unchanged),
+            "duplicates_in_model1": len(duplicates1),
+            "duplicates_in_model2": len(duplicates2),
+        },
+        "missing_in_model2": missing_in_model2,
+        "new_in_model2": new_in_model2,
+        "changed": changed,
+        "unchanged": unchanged,
+        "duplicates": {
+            "model_1": dict(duplicates1),
+            "model_2": dict(duplicates2),
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Legacy-Upload – zwei Dateien gleichzeitig
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -360,7 +510,7 @@ def compare_elements(session_id: str = Query(...)):
     try:
         loaded = load_ifc_models_from_session(session_id)
 
-        comparison = compare_models(
+        comparison = _run_element_comparison(
             loaded["model_1"],
             loaded["model_2"],
             file_label_1=loaded["file_label_1"],
