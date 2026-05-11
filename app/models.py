@@ -14,7 +14,7 @@ def _utcnow() -> datetime:
     """Return the current UTC time as a timezone-aware datetime.
 
     ``datetime.utcnow()`` is deprecated since Python 3.12 because it returns a
-    naive datetime that is easily confused with local time.  This helper
+    naive datetime that is easily confused with local time. This helper
     centralises the replacement so every model uses the same idiom.
     """
     return datetime.now(timezone.utc)
@@ -69,6 +69,8 @@ class Project(Base):
     description = Column(Text, default="", nullable=False)
     status = Column(String(40), default="active", nullable=False)
 
+    # Optional viewer/session cache reference.
+    # Permanent project files are stored through ProjectDocument / R2.
     session_id = Column(String(64), nullable=True)
 
     created_at = Column(
@@ -90,24 +92,19 @@ class Project(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
     documents = relationship(
         "ProjectDocument",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
     issues = relationship(
         "ProjectIssue",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,
-    )
-    clash_cache = relationship(
-        "ProjectClashCache",
-        back_populates="project",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        uselist=False,
     )
 
 
@@ -130,6 +127,7 @@ class ProjectFolder(Base):
         nullable=True,
         index=True,
     )
+
     name = Column(String(180), nullable=False)
     path = Column(String(1000), nullable=False, index=True)
 
@@ -137,7 +135,11 @@ class ProjectFolder(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     project = relationship("Project", back_populates="folders")
-    parent = relationship("ProjectFolder", remote_side=[folder_id], backref="children")
+    parent = relationship(
+        "ProjectFolder",
+        remote_side=[folder_id],
+        backref="children",
+    )
 
 
 class ProjectDocument(Base):
@@ -199,19 +201,3 @@ class ProjectIssue(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     project = relationship("Project", back_populates="issues")
-
-
-class ProjectClashCache(Base):
-    __tablename__ = "project_clash_cache"
-
-    project_id = Column(
-        String(64),
-        ForeignKey("projects.project_id", ondelete="CASCADE"),
-        primary_key=True,
-        index=True,
-    )
-    payload_json = Column(Text, default="{}", nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
-
-    project = relationship("Project", back_populates="clash_cache")
