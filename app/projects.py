@@ -163,6 +163,7 @@ def _project_subnav(project_id: str, active: str) -> str:
         ("dashboard",  f"/projects/{pid}",             "Dashboard"),
         ("model",      f"/projects/{pid}/model",        "Model"),
         ("documents",  f"/projects/{pid}/documents",    "Documents"),
+        ("clash",      f"/projects/{pid}/clash",        "Clash"),
         ("issues",     f"/projects/{pid}/issues",       "Issues"),
         ("todo",       f"/projects/{pid}/todo",         "To-do"),
         ("checking",   f"/projects/{pid}/checking",     "Checking"),
@@ -534,6 +535,11 @@ def project_dashboard(request: Request, project_id: str):
     pcode  = project["project_code"]
     status = project.get("status", "active")
     model_count = get_project_model_count(account_id, project_id)
+    try:
+        from app.issue_storage import count_project_issues
+        issue_count = count_project_issues(account_id, project_id)
+    except Exception:
+        issue_count = 0
 
     badge = (f'<span class="badge badge-active">active</span>'
              if status == "active"
@@ -549,7 +555,7 @@ def project_dashboard(request: Request, project_id: str):
         f'<div style="font-size:12px;color:var(--muted);margin-top:4px">Modelle</div>'
         f'</div>'
         f'<div class="card" style="text-align:center">'
-        f'<div style="font-size:28px;font-weight:700;color:var(--muted)">–</div>'
+        f'<div style="font-size:28px;font-weight:700;color:var(--accent)">{issue_count}</div>'
         f'<div style="font-size:12px;color:var(--muted);margin-top:4px">Issues</div>'
         f'</div>'
         f'<div class="card" style="text-align:center">'
@@ -721,17 +727,9 @@ def project_model_load(
 
 
 @projects_router.get("/projects/{project_id}/model/clash", response_class=HTMLResponse)
-def project_model_clash(
-    request: Request,
-    project_id: str,
-    tolerance: float = Query(default=0.0),
-):
-    loaded = _load_project_or_home(request, project_id)
-    if isinstance(loaded, RedirectResponse):
-        return loaded
-    _account, _project, sid = loaded
-    from app.viewer import viewer_clash
-    return viewer_clash(session_id=sid, tolerance=tolerance, project_id=project_id)
+def project_model_clash_redirect(request: Request, project_id: str):
+    """Backward-compatible redirect: Clash is now a project module."""
+    return RedirectResponse(f"/projects/{_e(project_id)}/clash", status_code=302)
 
 
 @projects_router.get("/projects/{project_id}/model/list", response_class=HTMLResponse)
@@ -991,13 +989,120 @@ def project_documents_delete(
 
 
 @projects_router.get("/projects/{project_id}/issues", response_class=HTMLResponse)
-def project_issues(request: Request, project_id: str):
+def project_issues(request: Request, project_id: str, saved: str = "", error: str = ""):
     account = _account_from_request(request)
     account_id = account["account_id"]
     project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
-    return _placeholder_page(project, account, "issues")
+
+    from app.issue_storage import list_project_issues
+    issues = list_project_issues(account_id, project_id)
+
+    flash = ""
+    if error:
+        flash = f'<div class="flash-err">⚠ {_e(error)}</div>'
+    elif saved:
+        flash = '<div class="flash-ok">✓ Änderung gespeichert.</div>'
+
+    rows = ""
+    for i in issues:
+        issue_id = _e(i["issue_id"])
+        rows += f"""
+        <tr>
+          <td style="font-weight:600;color:var(--accent)">{_e(i.get('title',''))}</td>
+          <td>{_e(i.get('issue_type',''))}</td>
+          <td>{_e(i.get('status',''))}</td>
+          <td style="font-size:11px;color:var(--muted);font-family:monospace">
+            {_e(i.get('global_id_1',''))}<br>{_e(i.get('global_id_2',''))}
+          </td>
+          <td style="font-size:12px;color:var(--muted)">{_e(i.get('created_at','')[:10])}</td>
+          <td style="white-space:nowrap">
+            <a class="btn" href="/projects/{_e(project_id)}/issues/{issue_id}/bcf" style="font-size:11px;padding:3px 8px;text-decoration:none">BCF</a>
+            <form method="POST" action="/projects/{_e(project_id)}/issues/delete" style="display:inline" onsubmit="return confirm('Issue wirklich löschen?')">
+              <input type="hidden" name="issue_id" value="{issue_id}">
+              <button class="btn btn-danger" type="submit" style="font-size:11px;padding:3px 8px">Löschen</button>
+            </form>
+          </td>
+        </tr>"""
+
+    empty = ""
+    if not issues:
+        empty = (
+            '<div class="card" style="text-align:center">'
+            '<h3 style="font-size:16px;margin-bottom:8px">Noch keine Issues vorhanden</h3>'
+            '<p style="color:var(--muted);font-size:13px;margin-bottom:14px">Speichere ausgewählte Clash-Zeilen im Clash-Modul als Issues.</p>'
+            f'<a class="btn btn-primary" href="/projects/{_e(project_id)}/clash" style="text-decoration:none">Zur Clash-Analyse</a>'
+            '</div>'
+        )
+
+    export_all = ""
+    if issues:
+        export_all = f'<a class="btn btn-primary" href="/projects/{_e(project_id)}/issues/bcf" style="text-decoration:none">Alle Clash-Issues als BCF exportieren</a>'
+
+    body = (
+        f'{_topbar_global(account)}'
+        f'{_project_subnav(project_id, "issues")}'
+        '<div style="padding:28px 32px;max-width:1200px;margin:0 auto">'
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px">'
+        '<div>'
+        '<h1 style="font-size:22px;font-weight:600">Issues</h1>'
+        '<p style="color:var(--muted);font-size:13px;margin-top:4px">Zentrale Issue-Verwaltung. BCF-Export gehört zu diesem Modul.</p>'
+        '</div>'
+        f'{export_all}'
+        '</div>'
+        f'{flash}'
+    )
+    if issues:
+        body += '<div class="card" style="overflow-x:auto"><table><tr><th>Titel</th><th>Typ</th><th>Status</th><th>GlobalIds</th><th>Erstellt</th><th>Aktion</th></tr>' + rows + '</table></div>'
+    body += empty + '</div>'
+    return _page(f"{project['project_name']} – Issues", body)
+
+
+@projects_router.get("/projects/{project_id}/issues/bcf")
+def project_issues_bcf(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
+    if not project:
+        return RedirectResponse("/", status_code=302)
+    try:
+        from app.bcf_export import create_bcf_zip_from_clashes
+        from app.issue_storage import issue_to_bcf_clash, list_project_issues
+        issues = [i for i in list_project_issues(account_id, project_id) if i.get("issue_type") == "clash"]
+        data = create_bcf_zip_from_clashes([issue_to_bcf_clash(i) for i in issues], project_name=project.get("project_name") or "BIMPruef Issues")
+        return Response(content=data, media_type="application/octet-stream", headers={"Content-Disposition": 'attachment; filename="project_issues.bcfzip"'})
+    except Exception as exc:
+        return Response(content=f"Fehler: {exc}", status_code=500)
+
+
+@projects_router.get("/projects/{project_id}/issues/{issue_id}/bcf")
+def project_issue_single_bcf(request: Request, project_id: str, issue_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
+    if not project:
+        return RedirectResponse("/", status_code=302)
+    try:
+        from app.bcf_export import create_bcf_zip_from_clashes
+        from app.issue_storage import get_issue, issue_to_bcf_clash
+        issue = get_issue(account_id, project_id, issue_id)
+        data = create_bcf_zip_from_clashes([issue_to_bcf_clash(issue)], project_name=project.get("project_name") or "BIMPruef Issue")
+        return Response(content=data, media_type="application/octet-stream", headers={"Content-Disposition": f'attachment; filename="issue_{issue_id}.bcfzip"'})
+    except Exception as exc:
+        return Response(content=f"Fehler: {exc}", status_code=500)
+
+
+@projects_router.post("/projects/{project_id}/issues/delete")
+def project_issue_delete(request: Request, project_id: str, issue_id: str = Form(...)):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    try:
+        from app.issue_storage import delete_issue
+        delete_issue(account_id, project_id, issue_id)
+        return RedirectResponse(f"/projects/{_e(project_id)}/issues?saved=deleted", status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f"/projects/{_e(project_id)}/issues?error={quote_plus(str(exc))}", status_code=303)
 
 
 @projects_router.get("/projects/{project_id}/todo", response_class=HTMLResponse)

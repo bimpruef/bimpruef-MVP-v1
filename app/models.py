@@ -96,6 +96,12 @@ class Project(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    issues = relationship(
+        "ProjectIssue",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class ProjectFolder(Base):
@@ -157,3 +163,40 @@ class ProjectDocument(Base):
 
     project = relationship("Project", back_populates="documents")
     folder = relationship("ProjectFolder")
+
+
+class ProjectIssue(Base):
+    __tablename__ = "project_issues"
+
+    issue_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(
+        String(64),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    source = Column(String(60), default="manual", nullable=False, index=True)
+    issue_type = Column(String(60), default="coordination", nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, default="", nullable=False)
+    status = Column(String(40), default="open", nullable=False, index=True)
+    priority = Column(String(40), default="normal", nullable=False)
+
+    global_id_1 = Column(String(80), default="", nullable=False, index=True)
+    global_id_2 = Column(String(80), default="", nullable=False, index=True)
+    type_1 = Column(String(120), default="", nullable=False)
+    type_2 = Column(String(120), default="", nullable=False)
+    name_1 = Column(String(255), default="", nullable=False)
+    name_2 = Column(String(255), default="", nullable=False)
+    file_label_1 = Column(String(255), default="", nullable=False)
+    file_label_2 = Column(String(255), default="", nullable=False)
+    slot_1 = Column(Integer, default=0, nullable=False)
+    slot_2 = Column(Integer, default=0, nullable=False)
+
+    payload_json = Column(Text, default="{}", nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    project = relationship("Project", back_populates="issues")
