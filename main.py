@@ -9,14 +9,16 @@ Primäre Struktur (projects_router):
   /projects/{id}/model           → Integrierter 3D-Viewer
   /projects/{id}/model/upload    → IFC hochladen
   /projects/{id}/model/remove    → Slot entfernen
-  /projects/{id}/model/clash     → Clash-Analyse
-  /projects/{id}/model/list      → Elementliste
+  /projects/{id}/model/clash     → Clash-Analyse (Redirect → /projects/{id}/clash)
+  /projects/{id}/model/list      → Redirect → /projects/{id}/list
   /projects/{id}/model/rulecheck → Rule-Check
+  /projects/{id}/list            → Elementliste (eigenständiges Projektmodul)
 
 Technische API-Endpunkte:
   /viewer/file/                  → IFC-Datei ausliefern
   /viewer/ai-chat/               → KI-Assistent
   /viewer/list/data/             → JSON-Daten-API Elementliste
+  /viewer/list/export/           → Excel-Export Elementliste
   /viewer/rulecheck/run/         → Rule-Check ausführen
 
 Legacy-Routen:
