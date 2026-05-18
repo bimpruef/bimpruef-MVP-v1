@@ -724,12 +724,21 @@ def _render_list_ui_inner(
 
       <!-- Tabellen-Wrapper -->
       <div id="table-wrap" style="flex:1;overflow:auto">
-        <div style="display:flex;align-items:center;justify-content:center;
-          height:100%;color:var(--muted);font-size:14px;font-style:italic"
+        <div style="display:flex;flex-direction:column;align-items:center;
+          justify-content:center;height:100%;gap:14px;padding:40px"
           id="table-placeholder">
-          Filter anwenden und auf
-          <strong style="color:var(--accent);margin:0 4px">▶ Anwenden</strong>
-          klicken, um die Tabelle zu laden.
+          <svg width="40" height="40" fill="none" stroke="var(--muted)" stroke-width="1.5" viewBox="0 0 24 24">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+          </svg>
+          <div style="text-align:center">
+            <div style="font-size:14px;color:var(--text);margin-bottom:6px">
+              Elementliste bereit zum Laden
+            </div>
+            <div style="font-size:12px;color:var(--muted)">
+              Optional Filter setzen, dann
+              <strong style="color:var(--accent)">▶ Anwenden</strong> klicken.
+            </div>
+          </div>
         </div>
         <table id="result-table" style="display:none">
           <thead id="result-thead"></thead>
@@ -1113,9 +1122,41 @@ function esc(s) {{
     .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }}
 
+// ─── Pset-Schlüssel vorab laden (ohne Elementberechnung) ─────────────────────
+// Lädt nur die verfügbaren Felder für Filter- und Spalten-UI.
+// Die eigentliche Elementberechnung startet ERST bei Klick auf ▶ Anwenden.
+async function preloadMeta() {{
+  const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
+  const params = new URLSearchParams({{
+    session_id:   SESSION_ID,
+    slots:        selectedSlots.join(","),
+    filters_json: "[]",
+    columns_json: "[]",
+  }});
+  try {{
+    const resp = await fetch(API_BASE + "?" + params.toString());
+    const data = await resp.json();
+    if (!data.error && data.pset_keys && data.pset_keys.length) {{
+      psetKeys = data.pset_keys;
+      buildColumnUI();
+      document.querySelectorAll(".filter-field").forEach(sel => {{
+        const cur = sel.value;
+        sel.innerHTML = buildFieldOptions(psetKeys);
+        sel.value = cur;
+      }});
+    }}
+    if (!data.error && data.total !== undefined) {{
+      statusTotal.textContent =
+        data.total + " Elemente verfügbar – Filter setzen und ▶ Anwenden klicken.";
+    }}
+  }} catch(e) {{
+    // Stille Fehler – Nutzer sieht Fehler beim Klick auf Anwenden
+  }}
+}}
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 buildColumnUI();
-loadData();
+preloadMeta();
 
 }})();
 </script>"""
