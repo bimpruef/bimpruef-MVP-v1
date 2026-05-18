@@ -164,6 +164,7 @@ def _project_subnav(project_id: str, active: str) -> str:
         ("model",      f"/projects/{pid}/model",        "Model"),
         ("documents",  f"/projects/{pid}/documents",    "Documents"),
         ("clash",      f"/projects/{pid}/clash",        "Clash"),
+        ("list",       f"/projects/{pid}/list",         "List"),
         ("issues",     f"/projects/{pid}/issues",       "Issues"),
         ("todo",       f"/projects/{pid}/todo",         "To-do"),
         ("checking",   f"/projects/{pid}/checking",     "Checking"),
@@ -733,13 +734,22 @@ def project_model_clash_redirect(request: Request, project_id: str):
 
 
 @projects_router.get("/projects/{project_id}/model/list", response_class=HTMLResponse)
-def project_model_list(request: Request, project_id: str):
-    loaded = _load_project_or_home(request, project_id)
-    if isinstance(loaded, RedirectResponse):
-        return loaded
-    _account, _project, sid = loaded
-    from app.list_module import viewer_list
-    return viewer_list(session_id=sid, project_id=project_id)
+def project_model_list_redirect(request: Request, project_id: str):
+    """Backward-compatible redirect: List ist jetzt ein eigenständiges Projektmodul."""
+    return RedirectResponse(f"/projects/{_e(project_id)}/list", status_code=302)
+
+
+@projects_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
+def project_list(request: Request, project_id: str):
+    """List-Modul als eigenständiger Projektbereich (gleichrangig mit Documents, Issues usw.)."""
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
+    if not project:
+        return RedirectResponse("/", status_code=302)
+    # Delegation an list_module – dort erfolgt Auth-Checks und Rendering
+    from app.list_module import project_list as _list_view
+    return _list_view(project_id=project_id, request=request)
 
 
 @projects_router.get("/projects/{project_id}/model/rulecheck", response_class=HTMLResponse)
