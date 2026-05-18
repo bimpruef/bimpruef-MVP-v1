@@ -216,6 +216,33 @@ def _load_documents_panel(
 # JSON-Daten-API
 # ─────────────────────────────────────────────────────────────────────────────
 
+@list_router.get("/viewer/list/meta/")
+def list_meta_api(
+    session_id: str = Query(...),
+    slots: str      = Query(default=""),
+):
+    """Leichtgewichtiger Endpunkt: Pset-Schlüssel + Elementanzahl ohne Rows.
+
+    Wird beim Seitenaufruf aufgerufen um Filter- und Spalten-UI zu befüllen,
+    ohne die vollstaendige Elementberechnung auszuloesen.
+    """
+    if not session_exists(session_id):
+        return JSONResponse({"error": "Session nicht gefunden."}, status_code=404)
+
+    all_slots = get_session_slots(session_id)
+    if slots.strip():
+        try:
+            selected_slots = [int(s) for s in slots.split(",") if s.strip()]
+        except ValueError:
+            selected_slots = all_slots
+    else:
+        selected_slots = all_slots
+
+    elements = _load_all_elements(session_id, selected_slots)
+    pset_keys = _collect_all_pset_keys(elements)
+    return JSONResponse({"total": len(elements), "pset_keys": pset_keys})
+
+
 @list_router.get("/viewer/list/data/")
 def list_data_api(
     session_id: str   = Query(...),
@@ -754,7 +781,7 @@ def _render_list_ui_inner(
 <script>
 (function() {{
 
-const SESSION_ID  = {repr(session_id)};
+const SESSION_ID  = {json.dumps(session_id)};
 const API_BASE    = "/viewer/list/data/";
 const EXPORT_BASE = "/viewer/list/export/";
 
@@ -1123,20 +1150,20 @@ function esc(s) {{
 }}
 
 // ─── Pset-Schlüssel vorab laden (ohne Elementberechnung) ─────────────────────
-// Lädt nur die verfügbaren Felder für Filter- und Spalten-UI.
-// Die eigentliche Elementberechnung startet ERST bei Klick auf ▶ Anwenden.
+// Ruft den leichtgewichtigen /meta/-Endpunkt auf – liest nur Pset-Keys + Anzahl,
+// berechnet keine Elementgeometrie. Startet automatisch beim Laden der Seite.
 async function preloadMeta() {{
   const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
   const params = new URLSearchParams({{
-    session_id:   SESSION_ID,
-    slots:        selectedSlots.join(","),
-    filters_json: "[]",
-    columns_json: "[]",
+    session_id: SESSION_ID,
+    slots:      selectedSlots.join(","),
   }});
   try {{
-    const resp = await fetch(API_BASE + "?" + params.toString());
+    const resp = await fetch("/viewer/list/meta/?" + params.toString());
+    if (!resp.ok) return;
     const data = await resp.json();
-    if (!data.error && data.pset_keys && data.pset_keys.length) {{
+    if (data.error) return;
+    if (data.pset_keys && data.pset_keys.length) {{
       psetKeys = data.pset_keys;
       buildColumnUI();
       document.querySelectorAll(".filter-field").forEach(sel => {{
@@ -1145,12 +1172,12 @@ async function preloadMeta() {{
         sel.value = cur;
       }});
     }}
-    if (!data.error && data.total !== undefined) {{
+    if (data.total !== undefined) {{
       statusTotal.textContent =
         data.total + " Elemente verfügbar – Filter setzen und ▶ Anwenden klicken.";
     }}
   }} catch(e) {{
-    // Stille Fehler – Nutzer sieht Fehler beim Klick auf Anwenden
+    // Stille Fehler beim Meta-Laden – kein Einfluss auf die Hauptfunktion
   }}
 }}
 
