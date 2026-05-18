@@ -20,7 +20,7 @@ import html as _html
 import json
 import io
 import os
-from typing import List
+from typing import Any, List
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, Query, Request
@@ -43,7 +43,7 @@ list_router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared helpers (identical thin wrappers so callers are unaffected)
+# Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _e(s) -> str:
@@ -70,8 +70,88 @@ def _fmt_size(num: int) -> str:
     return f"{n:.1f} GB"
 
 
-def _load_all_elements(session_id: str, slots: List[int]) -> list:
-    """Lädt alle Elemente aus den angegebenen Slots und gibt eine flache Liste zurück."""
+BASE_ELEMENT_KEYS = {
+    "file_label",
+    "slot",
+    "express_id",
+    "type",
+    "name",
+    "global_id",
+    "object_type",
+    "predefined_type",
+}
+
+
+def _parse_slots_param(session_id: str, slots: str) -> list[int]:
+    all_slots = get_session_slots(session_id)
+    if not slots.strip():
+        return all_slots
+    try:
+        selected = [int(s) for s in slots.split(",") if s.strip()]
+        return [s for s in selected if s in all_slots]
+    except ValueError:
+        return all_slots
+
+
+def _parse_json_list(raw: str) -> list:
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, list) else []
+    except Exception:
+        return []
+
+
+def _requires_psets(filters: list, columns: list) -> bool:
+    for col in columns:
+        if isinstance(col, str) and col.startswith("pset:"):
+            return True
+
+    for flt in filters:
+        if isinstance(flt, dict) and str(flt.get("field", "")).startswith("pset:"):
+            return True
+
+    return False
+
+
+def _safe_attr(obj: Any, name: str, default: str = "") -> Any:
+    try:
+        value = getattr(obj, name, default)
+        return default if value is None else value
+    except Exception:
+        return default
+
+
+def _extract_element_base_data(elem: Any, file_label: str, slot: int) -> dict:
+    try:
+        express_id = elem.id()
+    except Exception:
+        express_id = ""
+
+    try:
+        ifc_type = elem.is_a()
+    except Exception:
+        ifc_type = ""
+
+    return {
+        "file_label": file_label,
+        "slot": slot,
+        "express_id": express_id,
+        "type": ifc_type,
+        "name": _safe_attr(elem, "Name", ""),
+        "global_id": _safe_attr(elem, "GlobalId", ""),
+        "object_type": _safe_attr(elem, "ObjectType", ""),
+        "predefined_type": _safe_attr(elem, "PredefinedType", ""),
+    }
+
+
+def _load_all_elements(session_id: str, slots: List[int], include_psets: bool = False) -> list:
+    """
+    Lädt Elemente aus den angegebenen Slots.
+
+    Wichtig:
+    - include_psets=False lädt nur Basisdaten und vermeidet get_psets().
+    - include_psets=True lädt zusätzlich alle Psets für Pset-Filter/-Spalten.
+    """
     import ifcopenshell
 
     all_elements = []
@@ -79,15 +159,21 @@ def _load_all_elements(session_id: str, slots: List[int]) -> list:
         path = get_ifc_path(session_id, slot)
         if not os.path.exists(path):
             continue
+
         label = get_ifc_label(session_id, slot)
+
         try:
             model = ifcopenshell.open(path)
             for elem in get_candidate_products(model):
-                data = extract_element_data(elem, file_label=label)
-                data["slot"] = slot
+                if include_psets:
+                    data = extract_element_data(elem, file_label=label)
+                    data["slot"] = slot
+                else:
+                    data = _extract_element_base_data(elem, file_label=label, slot=slot)
                 all_elements.append(data)
         except Exception:
             continue
+
     return all_elements
 
 
@@ -134,14 +220,14 @@ def _load_context(request: Request, project_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Documents-Panel (identisches Muster wie project_clash.py)
+# Documents-Panel
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_documents_panel(
     account: dict, project_id: str, session_id: str,
     saved: str = "", error: str = ""
 ) -> str:
-    """Rendert die Dokumentenliste für den List-Modul-Cache (wie Clash)."""
+    """Rendert die Dokumentenliste für den List-Modul-Cache."""
     docs = list_project_ifc_documents(account["account_id"], project_id)
     slots = get_session_slots(session_id) if session_exists(session_id) else []
 
@@ -219,85 +305,94 @@ def _load_documents_panel(
 @list_router.get("/viewer/list/meta/")
 def list_meta_api(
     session_id: str = Query(...),
-    slots: str      = Query(default=""),
+    slots: str = Query(default=""),
+    include_psets: bool = Query(default=False),
 ):
-    """Leichtgewichtiger Endpunkt: Pset-Schlüssel + Elementanzahl ohne Rows.
+    """
+    Leichtgewichtiger Endpunkt.
 
-    Wird beim Seitenaufruf aufgerufen um Filter- und Spalten-UI zu befüllen,
-    ohne die vollstaendige Elementberechnung auszuloesen.
+    Standard:
+    - lädt nur Basisdaten
+    - extrahiert keine Psets
+
+    Nur wenn include_psets=True:
+    - werden Pset-Schlüssel gesammelt
     """
     if not session_exists(session_id):
         return JSONResponse({"error": "Session nicht gefunden."}, status_code=404)
 
-    all_slots = get_session_slots(session_id)
-    if slots.strip():
-        try:
-            selected_slots = [int(s) for s in slots.split(",") if s.strip()]
-        except ValueError:
-            selected_slots = all_slots
-    else:
-        selected_slots = all_slots
+    selected_slots = _parse_slots_param(session_id, slots)
+    elements = _load_all_elements(
+        session_id,
+        selected_slots,
+        include_psets=include_psets,
+    )
 
-    elements = _load_all_elements(session_id, selected_slots)
-    pset_keys = _collect_all_pset_keys(elements)
-    return JSONResponse({"total": len(elements), "pset_keys": pset_keys})
+    pset_keys = _collect_all_pset_keys(elements) if include_psets else []
+
+    return JSONResponse({
+        "total": len(elements),
+        "pset_keys": pset_keys,
+        "psets_loaded": include_psets,
+    })
 
 
 @list_router.get("/viewer/list/data/")
 def list_data_api(
-    session_id: str   = Query(...),
-    slots: str        = Query(default=""),
+    session_id: str = Query(...),
+    slots: str = Query(default=""),
     filters_json: str = Query(default="[]"),
     columns_json: str = Query(default="[]"),
 ):
     if not session_exists(session_id):
         return JSONResponse({"error": "Session nicht gefunden."}, status_code=404)
 
-    all_slots = get_session_slots(session_id)
-    if slots.strip():
-        try:
-            selected_slots = [int(s) for s in slots.split(",") if s.strip()]
-        except ValueError:
-            selected_slots = all_slots
-    else:
-        selected_slots = all_slots
+    selected_slots = _parse_slots_param(session_id, slots)
+    filters = _parse_json_list(filters_json)
+    columns = _parse_json_list(columns_json)
 
-    try:
-        filters = json.loads(filters_json)
-    except Exception:
-        filters = []
-    try:
-        columns = json.loads(columns_json)
-    except Exception:
-        columns = []
+    include_psets = _requires_psets(filters, columns)
 
-    elements = _load_all_elements(session_id, selected_slots)
+    elements = _load_all_elements(
+        session_id,
+        selected_slots,
+        include_psets=include_psets,
+    )
+
     filtered = _apply_filters(elements, filters)
 
-    pset_keys = _collect_all_pset_keys(elements)
+    pset_keys = _collect_all_pset_keys(elements) if include_psets else []
+    selected_pset_cols = [
+        c for c in columns
+        if isinstance(c, str) and c.startswith("pset:")
+    ]
 
     rows = []
     for elem in filtered:
-        flat_psets = _flatten_psets(elem.get("psets", {}))
         row = {
-            "file_label":      elem.get("file_label", ""),
-            "slot":            elem.get("slot", ""),
-            "express_id":      elem.get("express_id", ""),
-            "type":            elem.get("type", ""),
-            "name":            elem.get("name", ""),
-            "global_id":       elem.get("global_id", ""),
-            "object_type":     elem.get("object_type", ""),
+            "file_label": elem.get("file_label", ""),
+            "slot": elem.get("slot", ""),
+            "express_id": elem.get("express_id", ""),
+            "type": elem.get("type", ""),
+            "name": elem.get("name", ""),
+            "global_id": elem.get("global_id", ""),
+            "object_type": elem.get("object_type", ""),
             "predefined_type": elem.get("predefined_type", ""),
         }
-        for k in flat_psets:
-            row[f"pset:{k}"] = flat_psets[k]
+
+        if include_psets and selected_pset_cols:
+            flat_psets = _flatten_psets(elem.get("psets", {}))
+            for col_key in selected_pset_cols:
+                row[col_key] = flat_psets.get(col_key[5:], "")
+
         rows.append(row)
 
     return JSONResponse({
-        "total":     len(elements),
-        "filtered":  len(filtered),
+        "total": len(elements),
+        "filtered": len(filtered),
         "pset_keys": pset_keys,
-        "rows":      rows,
+        "psets_loaded": include_psets,
+        "rows": rows,
     })
 
 
@@ -307,8 +402,8 @@ def list_data_api(
 
 @list_router.get("/viewer/list/export/")
 def list_export_excel(
-    session_id: str   = Query(...),
-    slots: str        = Query(default=""),
+    session_id: str = Query(...),
+    slots: str = Query(default=""),
     filters_json: str = Query(default="[]"),
     columns_json: str = Query(default="[]"),
 ):
@@ -325,25 +420,18 @@ def list_export_excel(
             status_code=500,
         )
 
-    all_slots = get_session_slots(session_id)
-    if slots.strip():
-        try:
-            selected_slots = [int(s) for s in slots.split(",") if s.strip()]
-        except ValueError:
-            selected_slots = all_slots
-    else:
-        selected_slots = all_slots
+    selected_slots = _parse_slots_param(session_id, slots)
+    filters = _parse_json_list(filters_json)
+    columns = _parse_json_list(columns_json)
 
-    try:
-        filters = json.loads(filters_json)
-    except Exception:
-        filters = []
-    try:
-        columns = json.loads(columns_json)
-    except Exception:
-        columns = []
+    include_psets = _requires_psets(filters, columns)
 
-    elements = _load_all_elements(session_id, selected_slots)
+    elements = _load_all_elements(
+        session_id,
+        selected_slots,
+        include_psets=include_psets,
+    )
+
     filtered = _apply_filters(elements, filters)
 
     BASE_COLUMNS = [
@@ -401,7 +489,7 @@ def list_export_excel(
     ws.row_dimensions[2].height = 22
 
     for row_idx, elem in enumerate(filtered, start=3):
-        flat_psets = _flatten_psets(elem.get("psets", {}))
+        flat_psets = _flatten_psets(elem.get("psets", {})) if include_psets else {}
         fill = alt_fill if row_idx % 2 == 0 else normal_fill
         for col_idx, (col_key, _) in enumerate(export_cols, start=1):
             if col_key.startswith("pset:"):
@@ -501,14 +589,12 @@ def viewer_list(session_id: str = Query(...), project_id: str = Query(default=""
     """Legacy-Einstiegspunkt – leitet bei bekannter project_id weiter."""
     if project_id:
         return RedirectResponse(f"/projects/{_e(project_id)}/list", status_code=302)
-    # Bare-session fallback (no auth context available here)
     if not session_exists(session_id):
         return HTMLResponse(
             '<div style="padding:40px;color:#e94560"><h2>Session nicht gefunden</h2>'
             '<a href="/">← Start</a></div>',
             status_code=404,
         )
-    # Render with minimal context for anonymous legacy sessions
     return _render_list_ui_body_only(session_id=session_id, project_id="",
                                      nav_html=_legacy_nav(), nav_height="47px")
 
@@ -545,7 +631,6 @@ def _render_list_page(
     )
 
     if not slots:
-        # Nur Documents-Panel anzeigen, noch keine Elemente geladen
         body = f"""
         {_topbar_global(account)}
         {_project_subnav(project_id, "list")}
@@ -556,9 +641,8 @@ def _render_list_page(
         """
         return _page(f"{project['project_name']} – Liste", body)
 
-    # Slots geladen → Documents-Panel (als Collapsible) + volle List-UI
     nav_html = _topbar_global(account) + _project_subnav(project_id, "list")
-    nav_height = "94px"  # topbar (~41px) + subnav (~53px)
+    nav_height = "94px"
 
     body = f"""
     {nav_html}
@@ -609,7 +693,6 @@ def _render_list_ui_inner(
     """Gibt den inneren HTML-String der zweispaltigen List-UI zurück."""
     sid = _e(session_id)
 
-    # Documents-Panel als ausklappbares Detail-Element (spart Platz)
     docs_collapsible = ""
     if documents_panel_html:
         docs_collapsible = f"""
@@ -627,7 +710,6 @@ def _render_list_ui_inner(
       </div>
     </details>"""
 
-    # Slot-Checkboxen für den Filter-Manager
     slot_checkboxes = ""
     for s in slots:
         label = _e(get_ifc_label(session_id, s))
@@ -641,9 +723,8 @@ def _render_list_ui_inner(
   <span style="color:var(--muted);font-size:10px">(Slot {s})</span>
 </label>"""
 
-    # Zusätzliche Höhe für das Collapsible, wenn vorhanden
     extra_height = "56px" if documents_panel_html else "0px"
-    list_height  = f"calc(100vh - {nav_height} - {extra_height})"
+    list_height = f"calc(100vh - {nav_height} - {extra_height})"
 
     return f"""
 {docs_collapsible}
@@ -651,17 +732,12 @@ def _render_list_ui_inner(
 <div style="display:flex;flex-direction:column;height:{list_height};overflow:hidden;
   margin-top:{('8px' if documents_panel_html else '0')}">
 
-  <!-- Zweispaltiges Layout: Suchmanager links, Tabelle rechts -->
   <div style="display:flex;flex:1;overflow:hidden">
 
-    <!-- ════════════════════════════════════════════════════
-         LINKE SPALTE: Such-Manager + Spaltenauswahl
-         ════════════════════════════════════════════════════ -->
     <div id="left-panel" style="width:360px;min-width:320px;background:var(--surface);
       border-right:1px solid var(--border);display:flex;flex-direction:column;
       overflow:hidden;flex-shrink:0">
 
-      <!-- Header -->
       <div style="padding:8px 12px;font-size:10px;font-weight:700;
         background:var(--surface2);color:var(--muted);
         text-transform:uppercase;letter-spacing:.7px;
@@ -674,7 +750,6 @@ def _render_list_ui_inner(
 
       <div style="flex:1;overflow-y:auto;padding:10px">
 
-        <!-- Dateien / Slots -->
         <div class="card" style="margin-bottom:10px">
           <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:8px;
             text-transform:uppercase;letter-spacing:.5px">📁 Dateien</div>
@@ -683,7 +758,6 @@ def _render_list_ui_inner(
           </div>
         </div>
 
-        <!-- Filter-Regeln -->
         <div class="card" style="margin-bottom:10px">
           <div style="display:flex;align-items:center;justify-content:space-between;
             margin-bottom:8px">
@@ -695,7 +769,6 @@ def _render_list_ui_inner(
             </button>
           </div>
           <div id="filter-list" style="display:flex;flex-direction:column;gap:6px">
-            <!-- Filter werden dynamisch ergänzt -->
           </div>
           <div id="no-filters-hint" style="font-size:11px;color:var(--muted);
             font-style:italic;padding:4px 0">
@@ -703,14 +776,17 @@ def _render_list_ui_inner(
           </div>
         </div>
 
-        <!-- Spaltenauswahl -->
         <div class="card" style="margin-bottom:10px">
           <div style="display:flex;align-items:center;justify-content:space-between;
             margin-bottom:8px">
             <div style="font-size:11px;font-weight:600;color:var(--muted);
               text-transform:uppercase;letter-spacing:.5px">📊 Spalten</div>
-            <div style="display:flex;gap:5px">
-              <button id="btn-cols-all"  class="btn"
+            <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+              <button id="btn-load-psets" class="btn"
+                style="font-size:10px;padding:2px 8px;color:var(--accent)">
+                Pset-Spalten laden
+              </button>
+              <button id="btn-cols-all" class="btn"
                 style="font-size:10px;padding:2px 8px">Alle</button>
               <button id="btn-cols-none" class="btn"
                 style="font-size:10px;padding:2px 8px">Keine</button>
@@ -723,9 +799,8 @@ def _render_list_ui_inner(
           </div>
         </div>
 
-      </div><!-- /scroll -->
+      </div>
 
-      <!-- Export-Button -->
       <div style="padding:10px 12px;border-top:1px solid var(--border);flex-shrink:0">
         <button id="btn-export" class="btn btn-primary"
           style="width:100%;font-size:13px;padding:9px">
@@ -733,14 +808,10 @@ def _render_list_ui_inner(
         </button>
       </div>
 
-    </div><!-- /left-panel -->
+    </div>
 
-    <!-- ════════════════════════════════════════════════════
-         RECHTE SPALTE: Ergebnis-Tabelle
-         ════════════════════════════════════════════════════ -->
-    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
 
-      <!-- Status-Bar -->
       <div id="status-bar" style="padding:6px 14px;background:var(--surface2);font-size:11px;
         color:var(--muted);border-bottom:1px solid var(--border);flex-shrink:0;
         display:flex;align-items:center;gap:12px">
@@ -749,7 +820,6 @@ def _render_list_ui_inner(
         <span style="margin-left:auto;color:var(--muted);font-size:10px" id="status-cols"></span>
       </div>
 
-      <!-- Tabellen-Wrapper -->
       <div id="table-wrap" style="flex:1;overflow:auto">
         <div style="display:flex;flex-direction:column;align-items:center;
           justify-content:center;height:100%;gap:14px;padding:40px"
@@ -773,7 +843,7 @@ def _render_list_ui_inner(
         </table>
       </div>
 
-    </div><!-- /right -->
+    </div>
 
   </div>
 </div>
@@ -785,7 +855,6 @@ const SESSION_ID  = {json.dumps(session_id)};
 const API_BASE    = "/viewer/list/data/";
 const EXPORT_BASE = "/viewer/list/export/";
 
-// ─── Zustand ────────────────────────────────────────────────────────────────
 let allElements   = [];
 let psetKeys      = [];
 let filters       = [];
@@ -804,21 +873,20 @@ const BASE_COLS = [
   {{key:"predefined_type", label:"PredefinedType"}},
 ];
 
-// ─── DOM-Refs ────────────────────────────────────────────────────────────────
-const filterList      = document.getElementById("filter-list");
-const noFiltersHint   = document.getElementById("no-filters-hint");
-const columnList      = document.getElementById("column-list");
-const resultTable     = document.getElementById("result-table");
-const resultThead     = document.getElementById("result-thead");
-const resultTbody     = document.getElementById("result-tbody");
-const tablePlaceholder= document.getElementById("table-placeholder");
-const statusTotal     = document.getElementById("status-total");
-const statusFiltered  = document.getElementById("status-filtered");
-const statusCols      = document.getElementById("status-cols");
-const btnRun          = document.getElementById("btn-run");
-const btnExport       = document.getElementById("btn-export");
+const filterList       = document.getElementById("filter-list");
+const noFiltersHint    = document.getElementById("no-filters-hint");
+const columnList       = document.getElementById("column-list");
+const resultTable      = document.getElementById("result-table");
+const resultThead      = document.getElementById("result-thead");
+const resultTbody      = document.getElementById("result-tbody");
+const tablePlaceholder = document.getElementById("table-placeholder");
+const statusTotal      = document.getElementById("status-total");
+const statusFiltered   = document.getElementById("status-filtered");
+const statusCols       = document.getElementById("status-cols");
+const btnRun           = document.getElementById("btn-run");
+const btnExport        = document.getElementById("btn-export");
+const btnLoadPsets     = document.getElementById("btn-load-psets");
 
-// ─── Feld-Definitionen für Filter ───────────────────────────────────────────
 const BASE_FIELD_OPTS = [
   {{key:"file_label",      label:"Datei"}},
   {{key:"type",            label:"IFC-Typ"}},
@@ -851,7 +919,6 @@ function buildFieldOptions(extraPsetKeys) {{
   return opts;
 }}
 
-// ─── Filter hinzufügen ───────────────────────────────────────────────────────
 function addFilter(fieldKey, operator, value) {{
   const id = ++filterCounter;
   const wrapper = document.createElement("div");
@@ -860,7 +927,7 @@ function addFilter(fieldKey, operator, value) {{
     "border:1px solid var(--border);border-radius:6px;position:relative";
 
   const fieldOpts = buildFieldOptions(psetKeys);
-  const opOpts    = OPERATORS.map(o =>
+  const opOpts = OPERATORS.map(o =>
     `<option value="${{o.key}}" ${{o.key===operator?"selected":""}}>${{o.label}}</option>`
   ).join("");
 
@@ -902,9 +969,9 @@ function addFilter(fieldKey, operator, value) {{
   const valInput = wrapper.querySelector(".filter-val");
 
   function updateDatalist() {{
-    const fk  = fieldSel.value;
+    const fk = fieldSel.value;
     const dlId = `dl-${{id}}`;
-    const old  = document.getElementById(dlId);
+    const old = document.getElementById(dlId);
     if (old) old.remove();
     if (fk.startsWith("pset:")) {{
       const vals = getPsetValues(fk);
@@ -941,9 +1008,7 @@ function syncFilters() {{
   }});
 }}
 
-// ─── Pset-Werte aus bereits geladenen Daten ──────────────────────────────────
 function getPsetValues(psetKey) {{
-  const key  = psetKey.startsWith("pset:") ? psetKey.slice(5) : psetKey;
   const vals = new Set();
   allElements.forEach(row => {{
     const v = row[psetKey];
@@ -952,7 +1017,6 @@ function getPsetValues(psetKey) {{
   return [...vals].sort();
 }}
 
-// ─── Spalten-UI aufbauen ─────────────────────────────────────────────────────
 function buildColumnUI() {{
   colDefs = [...BASE_COLS];
   psetKeys.forEach(k => {{
@@ -1004,7 +1068,6 @@ function syncColumns() {{
   statusCols.textContent = selectedCols.length + " Spalten ausgewählt";
 }}
 
-// ─── Daten laden & Tabelle rendern ───────────────────────────────────────────
 async function loadData() {{
   syncFilters();
   syncColumns();
@@ -1014,8 +1077,8 @@ async function loadData() {{
   btnRun.textContent = "⏳ …";
 
   const params = new URLSearchParams({{
-    session_id:   SESSION_ID,
-    slots:        selectedSlots.join(","),
+    session_id: SESSION_ID,
+    slots: selectedSlots.join(","),
     filters_json: JSON.stringify(filters),
     columns_json: JSON.stringify(selectedCols),
   }});
@@ -1026,7 +1089,7 @@ async function loadData() {{
     if (data.error) throw new Error(data.error);
 
     allElements = data.rows;
-    if (!psetKeys.length && data.pset_keys.length) {{
+    if (!psetKeys.length && data.pset_keys && data.pset_keys.length) {{
       psetKeys = data.pset_keys;
       buildColumnUI();
       document.querySelectorAll(".filter-field").forEach(sel => {{
@@ -1036,7 +1099,7 @@ async function loadData() {{
       }});
     }}
 
-    statusTotal.textContent   = `Gesamt: ${{data.total}} Elemente`;
+    statusTotal.textContent = `Gesamt: ${{data.total}} Elemente`;
     statusFiltered.textContent = data.filtered < data.total
       ? `Gefiltert: ${{data.filtered}} angezeigt` : "";
     syncColumns();
@@ -1109,21 +1172,79 @@ function renderTable(rows) {{
   resultTable.style.display = "";
 }}
 
-// ─── Excel-Export ─────────────────────────────────────────────────────────────
 function doExport() {{
   syncFilters();
   syncColumns();
   const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
   const params = new URLSearchParams({{
-    session_id:   SESSION_ID,
-    slots:        selectedSlots.join(","),
+    session_id: SESSION_ID,
+    slots: selectedSlots.join(","),
     filters_json: JSON.stringify(filters),
     columns_json: JSON.stringify(selectedCols),
   }});
   window.location.href = EXPORT_BASE + "?" + params.toString();
 }}
 
-// ─── Alles/Keine-Knöpfe ───────────────────────────────────────────────────────
+async function preloadMeta() {{
+  const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
+  const params = new URLSearchParams({{
+    session_id: SESSION_ID,
+    slots: selectedSlots.join(","),
+    include_psets: "false",
+  }});
+
+  try {{
+    const resp = await fetch("/viewer/list/meta/?" + params.toString());
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    if (data.error) return;
+
+    if (data.total !== undefined) {{
+      statusTotal.textContent =
+        data.total + " Elemente verfügbar – Filter setzen und ▶ Anwenden klicken.";
+    }}
+  }} catch(e) {{
+  }}
+}}
+
+async function loadPsetKeys() {{
+  const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
+
+  btnLoadPsets.disabled = true;
+  btnLoadPsets.textContent = "⏳ Psets …";
+
+  const params = new URLSearchParams({{
+    session_id: SESSION_ID,
+    slots: selectedSlots.join(","),
+    include_psets: "true",
+  }});
+
+  try {{
+    const resp = await fetch("/viewer/list/meta/?" + params.toString());
+    const data = await resp.json();
+
+    if (data.error) throw new Error(data.error);
+
+    psetKeys = data.pset_keys || [];
+    buildColumnUI();
+
+    document.querySelectorAll(".filter-field").forEach(sel => {{
+      const cur = sel.value;
+      sel.innerHTML = buildFieldOptions(psetKeys);
+      sel.value = cur;
+    }});
+
+    statusTotal.textContent =
+      `${{data.total}} Elemente verfügbar – ${{psetKeys.length}} Pset-Spalten geladen.`;
+  }} catch(e) {{
+    statusTotal.textContent = "Fehler beim Laden der Pset-Spalten: " + e.message;
+  }} finally {{
+    btnLoadPsets.disabled = false;
+    btnLoadPsets.textContent = "Pset-Spalten laden";
+  }}
+}}
+
 document.getElementById("btn-cols-all").addEventListener("click", () => {{
   document.querySelectorAll(".col-chk").forEach(c => {{ c.checked = true; }});
   syncColumns();
@@ -1133,55 +1254,21 @@ document.getElementById("btn-cols-none").addEventListener("click", () => {{
   syncColumns();
 }});
 
-// ─── Events ──────────────────────────────────────────────────────────────────
 document.getElementById("btn-add-filter").addEventListener("click",
   () => addFilter("type", "contains", ""));
 btnRun.addEventListener("click", loadData);
 btnExport.addEventListener("click", doExport);
+btnLoadPsets.addEventListener("click", loadPsetKeys);
 
 document.addEventListener("keydown", e => {{
   if (e.key === "Enter" && e.target.classList.contains("filter-val")) loadData();
 }});
 
-// ─── Escape ───────────────────────────────────────────────────────────────────
 function esc(s) {{
   return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    .replace(/>/g,"&gt;").replace(/\"/g,"&quot;");
 }}
 
-// ─── Pset-Schlüssel vorab laden (ohne Elementberechnung) ─────────────────────
-// Ruft den leichtgewichtigen /meta/-Endpunkt auf – liest nur Pset-Keys + Anzahl,
-// berechnet keine Elementgeometrie. Startet automatisch beim Laden der Seite.
-async function preloadMeta() {{
-  const selectedSlots = [...document.querySelectorAll(".slot-chk:checked")].map(c => c.value);
-  const params = new URLSearchParams({{
-    session_id: SESSION_ID,
-    slots:      selectedSlots.join(","),
-  }});
-  try {{
-    const resp = await fetch("/viewer/list/meta/?" + params.toString());
-    if (!resp.ok) return;
-    const data = await resp.json();
-    if (data.error) return;
-    if (data.pset_keys && data.pset_keys.length) {{
-      psetKeys = data.pset_keys;
-      buildColumnUI();
-      document.querySelectorAll(".filter-field").forEach(sel => {{
-        const cur = sel.value;
-        sel.innerHTML = buildFieldOptions(psetKeys);
-        sel.value = cur;
-      }});
-    }}
-    if (data.total !== undefined) {{
-      statusTotal.textContent =
-        data.total + " Elemente verfügbar – Filter setzen und ▶ Anwenden klicken.";
-    }}
-  }} catch(e) {{
-    // Stille Fehler beim Meta-Laden – kein Einfluss auf die Hauptfunktion
-  }}
-}}
-
-// ─── Bootstrap ────────────────────────────────────────────────────────────────
 buildColumnUI();
 preloadMeta();
 
