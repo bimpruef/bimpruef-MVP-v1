@@ -1,10 +1,16 @@
 """
 list_module.py – BIMPruef Element-Listen-Modul
 
+Eigenständiges Projektmodul – gleichrangig mit Documents, Issues, Clash, To-do, Checking.
+
 Routen:
-  GET  /viewer/list/          → Such-Manager + Spaltenauswahl + Tabellenvorschau
-  GET  /viewer/list/data/     → JSON-API: gefilterte Elementdaten
-  GET  /viewer/list/export/   → Excel-Download der gefilterten + konfigurierten Liste
+  GET  /projects/{project_id}/list   → Haupt-UI: Such-Manager + Spaltenauswahl + Tabellenvorschau
+  GET  /viewer/list/data/            → JSON-API: gefilterte Elementdaten (technisch, bleibt unter /viewer/)
+  GET  /viewer/list/export/          → Excel-Download der gefilterten + konfigurierten Liste
+
+  Legacy (Redirect):
+  GET  /viewer/list/                 → wird auf /projects/{project_id}/list weitergeleitet
+                                       (nur noch für sessionbasierte Aufrufe ohne project_id)
 """
 
 import html as _html
@@ -13,7 +19,7 @@ import io
 from typing import Optional, List
 
 from fastapi import APIRouter, Query
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.storage import get_session_slots, get_ifc_label, session_exists
 from app.extractors import (
@@ -306,35 +312,176 @@ def list_export_excel(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Haupt-Seite des List-Moduls
+# Eigenständige UI-Helfer – keine Abhängigkeit zu viewer.py
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _topbar_list(session_id: str, project_id: str = "") -> str:
-    """Rendert die gemeinsame projektfähige Viewer-Navigation."""
-    from app.viewer import _topbar
-    return _topbar(session_id, active="list", project_id=project_id)
+_DARK_STYLES = """\
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0e0e1a;--surface:#16213e;--surface2:#1a2a4a;
+  --border:#1e3a6e;--accent:#4fc3f7;--accent2:#e94560;
+  --text:#d0dce8;--muted:#4a6080;--success:#4caf50;
+}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);
+  color:var(--text);min-height:100vh;line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+button,.btn{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);border-radius:6px;cursor:pointer;font-size:13px;
+  transition:background .15s,border-color .15s}
+button:hover,.btn:hover{background:#223a5e;border-color:var(--accent)}
+.btn-primary{background:var(--accent);color:#0a1a2e;border-color:var(--accent);font-weight:600}
+.btn-primary:hover{background:#81d4fa}
+.card{background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:18px;margin-bottom:16px}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;font-size:12px}
+th{background:var(--surface2);color:#8ab;font-weight:600;position:sticky;top:0;z-index:1}
+tr:hover td{background:rgba(79,195,247,.04)}
+.bp-tab{display:inline-block;padding:8px 16px;font-size:13px;color:var(--text);
+  text-decoration:none;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.bp-tab:hover{color:var(--accent);text-decoration:none}
+.bp-tab--active{color:var(--accent);border-bottom:2px solid var(--accent)}
+footer{text-align:center;padding:24px 0 12px;border-top:1px solid var(--border);
+  color:var(--muted);font-size:12px;margin-top:40px}
+</style>"""
+
+
+def _page(title: str, body: str) -> HTMLResponse:
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_e(title)}</title>
+{_DARK_STYLES}
+<link rel="stylesheet" href="/static/bimpruef.css">
+</head>
+<body>
+{body}
+<footer>
+  <p>BIMPruef Platform &nbsp;·&nbsp;
+  <a href="/impressum">Impressum</a> &nbsp;·&nbsp;
+  <a href="/datenschutz">Datenschutz</a></p>
+</footer>
+</body>
+</html>""")
+
+
+def _project_subnav(project_id: str) -> str:
+    """Rendert die projektweite Subnav mit aktivem List-Tab.
+    Spiegelt _project_subnav() aus projects.py – List ist hier immer aktiv."""
+    pid = _e(project_id)
+    items = [
+        ("dashboard",  f"/projects/{pid}",             "Dashboard"),
+        ("model",      f"/projects/{pid}/model",        "Model"),
+        ("documents",  f"/projects/{pid}/documents",    "Documents"),
+        ("clash",      f"/projects/{pid}/clash",        "Clash"),
+        ("list",       f"/projects/{pid}/list",         "List"),
+        ("issues",     f"/projects/{pid}/issues",       "Issues"),
+        ("todo",       f"/projects/{pid}/todo",         "To-do"),
+        ("checking",   f"/projects/{pid}/checking",     "Checking"),
+        ("settings",   f"/projects/{pid}/settings",     "Settings"),
+    ]
+    links = []
+    for key, href, label in items:
+        cls = "bp-tab bp-tab--active" if key == "list" else "bp-tab"
+        links.append(f'<a href="{href}" class="{cls}">{label}</a>')
+    return (
+        '<div style="background:var(--surface);border-bottom:1px solid var(--border);'
+        'padding:0 16px">'
+        + "".join(links) +
+        '</div>'
+    )
+
+
+def _topbar_project(project_id: str) -> str:
+    """Obere Navigationsleiste mit Logo und Zurück-Link zum Projekt-Dashboard."""
+    pid = _e(project_id)
+    return (
+        '<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;'
+        'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
+        '<a href="/" style="font-size:12px;color:var(--muted);text-decoration:none">BIMPruef</a>'
+        '<span style="color:var(--muted);font-size:12px">/</span>'
+        f'<a href="/projects/{pid}" style="font-size:12px;color:var(--muted);text-decoration:none">Projekt</a>'
+        '<span style="color:var(--muted);font-size:12px">/</span>'
+        '<span style="font-size:12px;color:var(--text)">List</span>'
+        '</div>'
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Haupt-Seite des List-Moduls  (neuer Einstiegspunkt: Projektmodul)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@list_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
+def project_list(project_id: str, request=None):
+    """Eigenständige List-Seite als Projektmodul.
+    Holt die Session-ID aus dem Projekt und rendert die vollständige List-UI."""
+    from app.auth import require_user
+    from app.project_storage import get_project, get_or_create_project_session
+
+    # Auth – require_user wirft AuthError wenn kein Cookie; FastAPI gibt 401.
+    try:
+        user = require_user(request)
+        account_id = user["user_id"]
+    except Exception:
+        from fastapi.responses import RedirectResponse as _RR
+        return _RR("/auth/login", status_code=302)
+
+    project = get_project(account_id, project_id)
+    if not project:
+        from fastapi.responses import RedirectResponse as _RR
+        return _RR("/", status_code=302)
+
+    session_id = get_or_create_project_session(account_id, project_id)
+    return _render_list_page(session_id=session_id, project_id=project_id)
 
 
 @list_router.get("/viewer/list/", response_class=HTMLResponse)
 def viewer_list(session_id: str = Query(...), project_id: str = Query(default="")):
-    from app.viewer import _page
+    """Legacy-Einstiegspunkt – leitet bei bekannter project_id weiter, sonst
+    rendert direkt (für nicht-Projekt-Sessions aus dem Legacy-Viewer-Workflow)."""
+    if project_id:
+        return RedirectResponse(f"/projects/{_e(project_id)}/list", status_code=302)
+    # Ohne project_id: direkte Darstellung (Legacy-Pfad bleibt funktionsfähig)
+    return _render_list_page(session_id=session_id, project_id="")
 
+
+def _render_list_page(session_id: str, project_id: str) -> HTMLResponse:
+    """Kern-Rendering der List-UI – unabhängig vom Einstiegspunkt."""
     if not session_exists(session_id):
         return _page("Fehler",
             '<div style="padding:40px;color:var(--accent2)">'
             '<h2>Session nicht gefunden</h2><a href="/">← Start</a></div>')
 
     sid   = _e(session_id)
-    from app.viewer import _viewer_url
-    _viewer_url = _viewer_url(session_id, "viewer", project_id)
     slots = get_session_slots(session_id)
+
+    # Bestimme Navigations-Header je nach Kontext
+    if project_id:
+        nav_html = _topbar_project(project_id) + _project_subnav(project_id)
+        model_url = f"/projects/{_e(project_id)}/model"
+        nav_height = "94px"   # topbar (~41px) + subnav (~53px)
+    else:
+        # Legacy-Modus ohne Projekt: minimale Leiste
+        nav_html = (
+            '<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;'
+            'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
+            '<a href="/" style="font-size:12px;color:var(--muted);text-decoration:none">← BIMPruef</a>'
+            '<span style="font-size:12px;color:var(--text)">Elementliste</span>'
+            '</div>'
+        )
+        model_url = f"/viewer/?session_id={sid}"
+        nav_height = "47px"
 
     if not slots:
         body = f"""
-{_topbar_list(session_id, project_id)}
+{nav_html}
 <div style="padding:40px;text-align:center;color:var(--muted)">
-  <p style="font-size:15px">Keine Modelle geladen. Bitte zuerst IFC-Dateien hochladen.</p>
-  <a href="{_viewer_url}" class="btn btn-primary"
+  <p style="font-size:15px">Keine Modelle geladen. Bitte zuerst IFC-Dateien aus Documents laden.</p>
+  <a href="{model_url}" class="btn btn-primary"
     style="margin-top:16px;display:inline-block;text-decoration:none">
     ← Zum Viewer
   </a>
@@ -355,9 +502,9 @@ def viewer_list(session_id: str = Query(...), project_id: str = Query(default=""
 </label>"""
 
     body = f"""
-{_topbar_list(session_id, project_id)}
+{nav_html}
 
-<div style="display:flex;flex-direction:column;height:calc(100vh - 47px);overflow:hidden">
+<div style="display:flex;flex-direction:column;height:calc(100vh - {nav_height});overflow:hidden">
 
   <!-- Zweispaltiges Layout: Suchmanager links, Tabelle rechts -->
   <div style="display:flex;flex:1;overflow:hidden">
