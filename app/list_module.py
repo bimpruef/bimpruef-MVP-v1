@@ -418,8 +418,8 @@ def list_export_excel(
 
 @list_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
 def project_list(project_id: str, request: Request,
-                 saved: str = Query(default=""),
-                 error: str = Query(default="")):
+                 saved: str = "",
+                 error: str = ""):
     """Eigenständige List-Seite als Projektmodul.
     Erster Schritt: Modelle aus Documents laden.
     Zweiter Schritt: Elementliste anzeigen (sobald Slots vorhanden)."""
