@@ -387,7 +387,7 @@ def _project_url(project_id: str, area: str = "viewer", extra: str = "") -> str:
         "dashboard": f"/projects/{pid}",
         "viewer":    f"/projects/{pid}/model",
         "clash":     f"/projects/{pid}/model/clash",
-        "list":      f"/projects/{pid}/model/list",
+        "list":      f"/projects/{pid}/list",
         "rulecheck": f"/projects/{pid}/model/rulecheck",
     }
     base = base_map.get(area, base_map["viewer"])
@@ -420,10 +420,11 @@ def _topbar(session_id: str, active: str = "", clash_params: str = "", project_i
         f'<a href="{_project_url(project_id, "dashboard")}" style="padding:8px 12px;font-size:12px;color:var(--muted);text-decoration:none">← Projekt</a>'
         if project_id else ""
     )
+    # Liste ist jetzt ein eigenständiges Projektmodul und erscheint nicht mehr
+    # in der Viewer-internen Navigation – nur Model, Rule-Check bleiben hier.
     nav = [
-        ("viewer",    _viewer_url(session_id, "viewer", project_id),                    "🏗 Model"),
-        ("list",      _viewer_url(session_id, "list", project_id),                      "📋 Liste"),
-        ("rulecheck", _viewer_url(session_id, "rulecheck", project_id),                 "✅ Rule-Check"),
+        ("viewer",    _viewer_url(session_id, "viewer", project_id),    "🏗 Model"),
+        ("rulecheck", _viewer_url(session_id, "rulecheck", project_id), "✅ Rule-Check"),
     ]
     items = project_back
     for key, href, label in nav:
@@ -2587,119 +2588,4 @@ if (searchInput) {
 if (searchClear) {
   searchClear.addEventListener("click", () => {
     searchInput.value = "";
-    renderSearchResults("");
-    searchInput.focus();
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Bootstrap
-// ═══════════════════════════════════════════════════════════════════════════
-(async () => {
-  if (MODEL_URLS.length === 0) {
-    loadingEl.style.display = "none";
-    return;
-  }
-  try {
-    await initWebIfc();
-    for (const cfg of MODEL_URLS) {
-      try {
-        await loadModel(cfg);
-      } catch (err) {
-        console.error("Ladefehler:", cfg.label, err);
-        if (loadTxtEl) loadTxtEl.textContent = `⚠ Fehler: ${err.message}`;
-      }
-    }
-    buildCategoryUI();
-    buildSearchIndex();
-    fitAll();
-    applyClashHighlight();
-  } catch (err) {
-    if (loadTxtEl) loadTxtEl.textContent = "Initialisierungsfehler: " + err.message;
-    console.error(err);
-  } finally {
-    loadingEl.style.display = "none";
-  }
-})();
-"""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Clash-Analyse-Seite
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/viewer/clash/", response_class=HTMLResponse)
-def viewer_clash_legacy_redirect(
-    session_id: str = Query(default=""),
-    project_id: str = Query(default=""),
-):
-    """Legacy route: Clash UI moved to the project-level Clash module."""
-    if project_id:
-        return RedirectResponse(f"/projects/{_e(project_id)}/clash", status_code=302)
-    return _page(
-        "Clash-Analyse verschoben",
-        '<div style="padding:40px;max-width:760px">'
-        '<h2 style="font-size:20px;margin-bottom:10px">Clash-Analyse ist jetzt ein Projektmodul</h2>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">'
-        'Die Clash-Analyse wird nicht mehr im Viewer gestartet. Öffne ein Projekt und nutze dort den Reiter Clash. '
-        'IFC-Dateien werden aus Documents geladen; BCF-Export erfolgt im Issues-Modul.'
-        '</p>'
-        '<a class="btn btn-primary" href="/" style="text-decoration:none">Zu den Projekten</a>'
-        '</div>'
-    )
-
-
-@router.get("/viewer/clash/pset-keys/")
-def viewer_clash_pset_keys_legacy():
-    return JSONResponse(
-        {"error": "Diese API wurde nach /projects/{project_id}/clash/pset-keys verschoben."},
-        status_code=410,
-    )
-
-
-@router.post("/viewer/clash/run/")
-async def viewer_clash_run_legacy():
-    return JSONResponse(
-        {"error": "Diese API wurde nach /projects/{project_id}/clash/run verschoben."},
-        status_code=410,
-    )
-
-
-@router.get("/viewer/clash/detail/", response_class=HTMLResponse)
-def viewer_clash_detail_legacy_redirect(
-    project_id: str = Query(default=""),
-    slot_a: int = Query(default=1),
-    slot_b: int = Query(default=1),
-    gid1: str = Query(default=""),
-    gid2: str = Query(default=""),
-):
-    if project_id:
-        return RedirectResponse(
-            f"/projects/{_e(project_id)}/clash/detail?slot_a={slot_a}&slot_b={slot_b}"
-            f"&gid1={urllib.parse.quote(gid1)}&gid2={urllib.parse.quote(gid2)}",
-            status_code=302,
-        )
-    return _page(
-        "Clash-Detail verschoben",
-        '<div style="padding:40px;max-width:760px">'
-        '<h2 style="font-size:20px;margin-bottom:10px">Clash-Detail gehört jetzt zum Projektmodul</h2>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">Öffne die Clash-Liste innerhalb eines Projekts.</p>'
-        '<a class="btn btn-primary" href="/" style="text-decoration:none">Zu den Projekten</a>'
-        '</div>'
-    )
-
-
-@router.get("/viewer/clash/bcf/")
-def viewer_clash_bcf_removed():
-    return Response(
-        content="BCF-Export wurde aus dem Clash-Modul entfernt. Bitte Issues-Modul verwenden.",
-        status_code=410,
-    )
-
-
-@router.get("/viewer/clash/bcf-single/")
-def viewer_clash_bcf_single_removed():
-    return Response(
-        content="BCF-Export wurde aus dem Clash-Modul entfernt. Bitte Clash-Zeile als Issue speichern und im Issues-Modul als BCF exportieren.",
-        status_code=410,
-    )
+    renderSearchResults(
