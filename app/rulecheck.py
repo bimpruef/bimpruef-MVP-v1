@@ -1,10 +1,13 @@
 """
 rulecheck.py – BIMPruef Rule-Check-Modul
 
-Routen:
-  GET  /viewer/rulecheck/        → Rule-Check-Seite (Slot-Auswahl + Regelkonfiguration)
-  POST /viewer/rulecheck/run/    → Regelprüfung ausführen, gibt JSON zurück
-  GET  /viewer/rulecheck/export/ → Export der Ergebnisse als JSON (für späteren Excel-Export vorbereitet)
+Dieses Modul stellt nur noch die Regellogik bereit (Funktionen, Regel-Definitionen).
+Die Routen /viewer/rulecheck/* leiten auf das eigenständige Projektmodul um.
+
+Legacy-Redirects (für Abwärtskompatibilität):
+  GET  /viewer/rulecheck/        → /projects/{project_id}/checking  (302)
+  POST /viewer/rulecheck/run/    → 410 Gone
+  GET  /viewer/rulecheck/export/ → 410 Gone
 
 Unterstützte Regeln (Version 1):
   missing_names          – Elemente ohne Name
@@ -427,547 +430,56 @@ def run_rules_on_model(model, slot: int, file_label: str, rules: list) -> list:
     return results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UI-Hilfsfunktionen (identischer Stil wie viewer.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# CSS-Basis (direkt aus viewer.py übernommen, damit der Stil identisch bleibt)
-DARK_STYLES = """\
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e0e1a;--surface:#16213e;--surface2:#1a2a4a;
-  --border:#1e3a6e;--accent:#4fc3f7;--accent2:#e94560;
-  --text:#d0dce8;--muted:#4a6080;--success:#4caf50;
-  --warn:#ffb74d;--info:#64b5f6;
-}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);
-  color:var(--text);min-height:100vh;line-height:1.5}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-button,.btn{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);
-  color:var(--text);border-radius:6px;cursor:pointer;font-size:13px;
-  transition:background .15s,border-color .15s}
-button:hover,.btn:hover{background:#223a5e;border-color:var(--accent)}
-.btn-primary{background:var(--accent);color:#0a1a2e;border-color:var(--accent);font-weight:600}
-.btn-primary:hover{background:#81d4fa}
-.card{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:18px;margin-bottom:16px}
-table{border-collapse:collapse;width:100%}
-th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;font-size:12px}
-th{background:var(--surface2);color:#8ab;font-weight:600;position:sticky;top:0;z-index:1}
-tr:hover td{background:rgba(79,195,247,.04)}
-footer{text-align:center;padding:24px 0 12px;border-top:1px solid var(--border);
-  color:var(--muted);font-size:12px;margin-top:40px}
-label{cursor:pointer}
-input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
-.flash-err{background:#2a0a10;border:1px solid var(--accent2);border-radius:8px;
-  padding:10px 14px;color:#ffaaaa;font-size:13px;margin-bottom:14px}
-.sev-error{color:#ef9a9a;font-weight:600}
-.sev-warning{color:var(--warn);font-weight:600}
-.sev-info{color:var(--info)}
-.badge{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:600;margin-right:4px}
-.badge-error{background:#3e0d1a;color:#ef9a9a;border:1px solid #6e1a2e}
-.badge-warning{background:#3e2800;color:#ffb74d;border:1px solid #6e4800}
-.badge-info{background:#0d2a3e;color:#64b5f6;border:1px solid #1a4a6e}
-@keyframes spin{to{transform:rotate(360deg)}}
-</style>"""
-
-
-def _page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title>
-{DARK_STYLES}
-<link rel="stylesheet" href="/static/bimpruef.css">
-</head>
-<body>
-{body}
-<footer>
-  <p>BIMPruef Platform by Foad Amini &nbsp;·&nbsp;
-  <a href="/impressum">Impressum</a> &nbsp;·&nbsp;
-  <a href="/datenschutz">Datenschutz</a></p>
-</footer>
-</body>
-</html>""")
-
-
-def _brand_logo(height_px: int = 28) -> str:
-    """Brand-Element – identisch mit viewer.py."""
-    icon_size = max(27, int(height_px * 1.28))
-    text_size = max(18, int(height_px * 0.92))
-    return (
-        f'<div style="display:flex;align-items:center;gap:8px;margin-right:12px;line-height:1">'
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 54" role="img" '
-        f'aria-label="BIMpruef icon" style="height:{icon_size}px;width:auto;display:block">'
-        f'<g fill="none" stroke-linejoin="round" stroke-linecap="round" stroke-width="2.8">'
-        f'<g stroke="#1f5f9f">'
-        f'<path d="M8 18 24 8l16 10-16 10z"/><path d="M8 18v18l16 10V28z"/><path d="M40 18v18L24 46V28z"/>'
-        f'</g><g stroke="#d8192f">'
-        f'<path d="M29 18 45 8l16 10-16 10z"/><path d="M29 18v18l16 10V28z"/><path d="M61 18v18L45 46V28z"/>'
-        f'</g><g stroke="#8f4399">'
-        f'<path d="M50 18 66 8l16 10-16 10z"/><path d="M50 18v18l16 10V28z"/><path d="M82 18v18L66 46V28z"/>'
-        f'</g><g stroke="#27a6ad">'
-        f'<path d="M71 18 87 8l16 10-16 10z"/><path d="M71 18v18l16 10V28z"/><path d="M103 18v18L87 46V28z"/>'
-        f'</g></g></svg>'
-        f'<span style="font-family:\'Avenir Next\',\'Montserrat\',\'Segoe UI\',sans-serif;'
-        f'font-weight:300;letter-spacing:1.2px;color:var(--text);font-size:{text_size}px;'
-        f'white-space:nowrap;text-transform:uppercase">BIMPRUEF</span></div>'
-    )
-
-
-def _topbar(session_id: str, active: str = "", project_id: str = "") -> str:
-    """Rendert die gemeinsame projektfähige Viewer-Navigation."""
-    from app.viewer import _topbar as viewer_topbar
-    return viewer_topbar(session_id, active=active, project_id=project_id)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Route 1: GET /viewer/rulecheck/  – Konfigurationsseite
+# Legacy-Routen: /viewer/rulecheck/* → Projectmodul-Redirects
+#
+# Die UI lebt jetzt in project_rulecheck.py unter:
+#   GET  /projects/{project_id}/checking
+#   POST /projects/{project_id}/checking/run
+#   GET  /projects/{project_id}/checking/export
+#
+# Diese Stubs leiten alte Bookmarks / Links um, damit keine 404-Fehler entstehen.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @rulecheck_router.get("/viewer/rulecheck/")
-def viewer_rulecheck(session_id: str = Query(...), project_id: str = Query(default="")):
-    """Zeigt die Rule-Check-Konfigurationsseite."""
+def viewer_rulecheck_legacy(
+    project_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
+    """Legacy-Redirect: Rule-Check ist jetzt ein eigenständiges Projektmodul."""
+    if project_id:
+        from fastapi.responses import RedirectResponse as _RR
+        return _RR(f"/projects/{project_id}/checking", status_code=302)
+    # Ohne project_id kein sinnvoller Redirect möglich → Hinweisseite
+    from fastapi.responses import HTMLResponse as _HR
+    return _HR(
+        "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
+        "<title>Rule-Check verschoben – BIMPruef</title></head><body style='"
+        "font-family:sans-serif;padding:40px;background:#0e0e1a;color:#d0dce8'>"
+        "<h2>Rule-Check ist jetzt ein eigenständiges Projektmodul</h2>"
+        "<p style='color:#4a6080;margin-top:8px'>Öffne ein Projekt und wechsle zum Tab "
+        "<strong>Checking</strong>. IFC-Dateien werden dort aus Documents geladen.</p>"
+        "<p style='margin-top:20px'><a href='/' style='color:#4fc3f7'>Zur Projektübersicht</a></p>"
+        "</body></html>"
+    )
 
-    if not session_exists(session_id):
-        return _page("Rule-Check – BIMPruef", f"""
-        {_topbar('', 'rulecheck', project_id)}
-        <div style="padding:32px 24px">
-          <div class="flash-err">Session nicht gefunden. Bitte Datei erneut hochladen.</div>
-        </div>""")
-
-    slots = get_session_slots(session_id)
-    sid   = _e(session_id)
-
-    # Slot-Auswahl-HTML
-    if not slots:
-        slots_html = (
-            '<div class="flash-err">'
-            'Keine IFC-Dateien in dieser Session. Bitte zuerst eine Datei hochladen.'
-            '</div>'
-        )
-    else:
-        slots_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">'
-        for s in slots:
-            label = _e(get_ifc_label(session_id, s))
-            slots_html += (
-                f'<label style="display:flex;align-items:center;gap:6px;'
-                f'background:var(--surface2);border:1px solid var(--border);'
-                f'border-radius:8px;padding:8px 14px;font-size:13px">'
-                f'<input type="checkbox" name="slot" value="{s}" checked> '
-                f'Slot&nbsp;{s}&nbsp;–&nbsp;<strong>{label}</strong>'
-                f'</label>'
-            )
-        slots_html += '</div>'
-
-    # Regeln-HTML
-    rules_html = '<div style="display:flex;flex-direction:column;gap:8px">'
-    for rule in ALL_RULES:
-        sev      = rule["severity"]
-        badge_cl = f"badge-{sev}"
-        badge_lb = {"error": "Fehler", "warning": "Warnung", "info": "Hinweis"}.get(sev, sev)
-        rules_html += (
-            f'<label style="display:flex;align-items:flex-start;gap:10px;'
-            f'background:var(--surface2);border:1px solid var(--border);'
-            f'border-radius:8px;padding:10px 14px;font-size:13px;cursor:pointer">'
-            f'<input type="checkbox" name="rule" value="{_e(rule["id"])}" checked '
-            f'style="margin-top:2px"> '
-            f'<div>'
-            f'<div style="font-weight:600">{_e(rule["label"])} '
-            f'<span class="badge {badge_cl}">{badge_lb}</span></div>'
-            f'<div style="color:var(--muted);font-size:11px;margin-top:2px">'
-            f'{_e(rule["description"])}</div>'
-            f'</div>'
-            f'</label>'
-        )
-    rules_html += '</div>'
-
-    body = f"""
-{_topbar(session_id, "rulecheck", project_id)}
-
-<div style="max-width:900px;margin:32px auto;padding:0 24px">
-
-  <h1 style="font-size:22px;margin-bottom:4px">✅ Rule-Check</h1>
-  <p style="color:var(--muted);font-size:13px;margin-bottom:24px">
-    Wähle die zu prüfenden Modell-Slots und Regeln aus, dann starte die Prüfung.
-  </p>
-
-  <!-- Slot-Auswahl -->
-  <div class="card">
-    <h2 style="font-size:15px;margin-bottom:12px">Modell-Slots</h2>
-    <div id="slot-selection">{slots_html}</div>
-  </div>
-
-  <!-- Regelauswahl -->
-  <div class="card">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <h2 style="font-size:15px">Regeln</h2>
-      <div style="display:flex;gap:8px">
-        <button type="button" class="btn" style="font-size:11px;padding:4px 10px"
-          onclick="toggleAll(true)">Alle aktivieren</button>
-        <button type="button" class="btn" style="font-size:11px;padding:4px 10px"
-          onclick="toggleAll(false)">Alle deaktivieren</button>
-      </div>
-    </div>
-    <div id="rule-selection">{rules_html}</div>
-  </div>
-
-  <!-- Start-Button -->
-  <div style="margin-bottom:24px">
-    <button id="btn-run" class="btn btn-primary" style="font-size:14px;padding:10px 28px"
-      onclick="runCheck()">▶ Prüfung starten</button>
-    <span id="run-status" style="margin-left:14px;font-size:12px;color:var(--muted)"></span>
-  </div>
-
-  <!-- Ergebnis-Bereich (wird per JS befüllt) -->
-  <div id="result-area" style="display:none">
-
-    <!-- Zusammenfassung -->
-    <div class="card" id="result-summary"></div>
-
-    <!-- Filter -->
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="sev-filter">
-      <button class="btn" data-sev="all"     onclick="filterSev('all')"     style="font-size:12px">Alle</button>
-      <button class="btn" data-sev="error"   onclick="filterSev('error')"   style="font-size:12px">Nur Fehler</button>
-      <button class="btn" data-sev="warning" onclick="filterSev('warning')" style="font-size:12px">Nur Warnungen</button>
-      <button class="btn" data-sev="info"    onclick="filterSev('info')"    style="font-size:12px">Nur Hinweise</button>
-      <a id="btn-export" href="#" style="display:none;margin-left:auto" class="btn"
-        style="font-size:12px">⬇ JSON exportieren</a>
-    </div>
-
-    <!-- Ergebnis-Tabelle -->
-    <div style="overflow-x:auto">
-      <table id="result-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Schwere</th>
-            <th>Regel</th>
-            <th>Slot</th>
-            <th>Datei</th>
-            <th>IFC-Typ</th>
-            <th>Name</th>
-            <th>GlobalId</th>
-            <th>Meldung</th>
-          </tr>
-        </thead>
-        <tbody id="result-tbody"></tbody>
-      </table>
-    </div>
-
-  </div>
-</div>
-
-<script>
-const SESSION_ID = {json.dumps(session_id)};
-const PROJECT_ID = {json.dumps(project_id)};
-let _allResults = [];
-let _currentFilter = 'all';
-
-function toggleAll(state) {{
-  document.querySelectorAll('#rule-selection input[type=checkbox]')
-    .forEach(cb => cb.checked = state);
-}}
-
-function severityLabel(sev) {{
-  return {{error:'Fehler', warning:'Warnung', info:'Hinweis'}}[sev] || sev;
-}}
-function severityClass(sev) {{
-  return {{error:'sev-error', warning:'sev-warning', info:'sev-info'}}[sev] || '';
-}}
-
-function esc(s) {{
-  const d = document.createElement('div');
-  d.textContent = s ?? '';
-  return d.innerHTML;
-}}
-
-function renderTable(results) {{
-  const tbody = document.getElementById('result-tbody');
-  if (!results.length) {{
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:24px">Keine Ergebnisse.</td></tr>';
-    return;
-  }}
-  tbody.innerHTML = results.map((r, i) =>
-    `<tr data-sev="${{esc(r.severity)}}">
-      <td>${{i + 1}}</td>
-      <td><span class="${{severityClass(r.severity)}}">${{esc(severityLabel(r.severity))}}</span></td>
-      <td style="font-size:11px;color:var(--muted)">${{esc(r.rule_id)}}</td>
-      <td>${{esc(r.slot)}}</td>
-      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-          title="${{esc(r.file_label)}}">${{esc(r.file_label)}}</td>
-      <td>${{esc(r.ifc_type)}}</td>
-      <td>${{esc(r.name)}}</td>
-      <td style="font-family:monospace;font-size:10px">${{esc(r.global_id)}}</td>
-      <td style="max-width:340px">${{esc(r.message)}}</td>
-    </tr>`
-  ).join('');
-}}
-
-function filterSev(sev) {{
-  _currentFilter = sev;
-  document.querySelectorAll('#sev-filter .btn').forEach(b => {{
-    b.style.borderColor = b.dataset.sev === sev ? 'var(--accent)' : '';
-  }});
-  if (sev === 'all') {{
-    renderTable(_allResults);
-  }} else {{
-    renderTable(_allResults.filter(r => r.severity === sev));
-  }}
-}}
-
-async function runCheck() {{
-  const slots = [...document.querySelectorAll('#slot-selection input[name=slot]:checked')]
-    .map(cb => parseInt(cb.value));
-  const rules = [...document.querySelectorAll('#rule-selection input[name=rule]:checked')]
-    .map(cb => cb.value);
-
-  if (!slots.length) {{
-    alert('Bitte mindestens einen Slot auswählen.');
-    return;
-  }}
-  if (!rules.length) {{
-    alert('Bitte mindestens eine Regel auswählen.');
-    return;
-  }}
-
-  const btn    = document.getElementById('btn-run');
-  const status = document.getElementById('run-status');
-  btn.disabled = true;
-  status.textContent = 'Prüfung läuft …';
-  document.getElementById('result-area').style.display = 'none';
-
-  try {{
-    const resp = await fetch('/viewer/rulecheck/run/', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{session_id: SESSION_ID, slots, rules}}),
-    }});
-
-    let data;
-    try {{
-      data = await resp.json();
-    }} catch (_) {{
-      const txt = await resp.text().catch(() => '(kein Body)');
-      alert(`HTTP ${{resp.status}} – Antwort konnte nicht geparst werden:\n${{txt.slice(0, 400)}}`);
-      status.textContent = '';
-      btn.disabled = false;
-      return;
-    }}
-
-    if (!resp.ok || data.error) {{
-      const msg = data.error || data.detail
-        || JSON.stringify(data).slice(0, 400)
-        || `HTTP ${{resp.status}}`;
-      status.textContent = '';
-      alert('Fehler: ' + msg);
-      btn.disabled = false;
-      return;
-    }}
-
-    _allResults = data.results || [];
-    const counts = data.summary || {{}};
-
-    // Zusammenfassung
-    document.getElementById('result-summary').innerHTML = `
-      <h2 style="font-size:15px;margin-bottom:12px">Ergebnis-Zusammenfassung</h2>
-      <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;
-          padding:10px 20px;text-align:center">
-          <div style="font-size:24px;font-weight:700;color:var(--text)">${{counts.total ?? 0}}</div>
-          <div style="font-size:11px;color:var(--muted)">Gesamt</div>
-        </div>
-        <div style="background:#2a0a10;border:1px solid #6e1a2e;border-radius:8px;
-          padding:10px 20px;text-align:center">
-          <div style="font-size:24px;font-weight:700;color:#ef9a9a">${{counts.errors ?? 0}}</div>
-          <div style="font-size:11px;color:var(--muted)">Fehler</div>
-        </div>
-        <div style="background:#3e2800;border:1px solid #6e4800;border-radius:8px;
-          padding:10px 20px;text-align:center">
-          <div style="font-size:24px;font-weight:700;color:#ffb74d">${{counts.warnings ?? 0}}</div>
-          <div style="font-size:11px;color:var(--muted)">Warnungen</div>
-        </div>
-        <div style="background:#0d2a3e;border:1px solid #1a4a6e;border-radius:8px;
-          padding:10px 20px;text-align:center">
-          <div style="font-size:24px;font-weight:700;color:#64b5f6">${{counts.infos ?? 0}}</div>
-          <div style="font-size:11px;color:var(--muted)">Hinweise</div>
-        </div>
-        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;
-          padding:10px 20px;text-align:center">
-          <div style="font-size:24px;font-weight:700;color:var(--success)">${{counts.slots_checked ?? 0}}</div>
-          <div style="font-size:11px;color:var(--muted)">Slots geprüft</div>
-        </div>
-      </div>`;
-
-    // Export-Link aufbauen
-    const exportParams = new URLSearchParams({{
-      session_id: SESSION_ID,
-      slots: slots.join(','),
-      rules: rules.join(','),
-    }});
-    const exportBtn = document.getElementById('btn-export');
-    exportBtn.href  = '/viewer/rulecheck/export/?' + exportParams.toString();
-    exportBtn.style.display = '';
-
-    document.getElementById('result-area').style.display = '';
-    filterSev('all');
-    status.textContent = `Fertig – ${{_allResults.length}} Befunde.`;
-  }} catch (err) {{
-    alert('Netzwerkfehler: ' + err.message);
-    status.textContent = '';
-  }} finally {{
-    btn.disabled = false;
-  }}
-}}
-</script>"""
-
-    return _page("Rule-Check – BIMPruef", body)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Route 2: POST /viewer/rulecheck/run/  – Prüfung ausführen
-# ─────────────────────────────────────────────────────────────────────────────
 
 @rulecheck_router.post("/viewer/rulecheck/run/")
-async def viewer_rulecheck_run(request: Request):
-    """
-    Nimmt JSON entgegen:
-      { "session_id": "...", "slots": [1, 2], "rules": ["missing_names", ...] }
-    Gibt JSON zurück:
-      { "summary": {...}, "results": [...] }
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Ungültiges JSON."}, status_code=400)
+async def viewer_rulecheck_run_legacy():
+    """Legacy: Diese API ist nach /projects/{project_id}/checking/run verschoben."""
+    from fastapi.responses import JSONResponse as _JR
+    return _JR(
+        {"error": "Diese API wurde nach /projects/{project_id}/checking/run verschoben."},
+        status_code=410,
+    )
 
-    session_id = str(body.get("session_id", "")).strip()
-    slots      = body.get("slots", [])
-    rules      = body.get("rules", [])
-
-    # Eingabe-Validierung
-    if not session_id:
-        return JSONResponse({"error": "session_id fehlt."}, status_code=400)
-    if not session_exists(session_id):
-        return JSONResponse({"error": "Session nicht gefunden."}, status_code=404)
-    if not slots:
-        return JSONResponse({"error": "Keine Slots angegeben."}, status_code=400)
-    if not rules:
-        return JSONResponse({"error": "Keine Regeln angegeben."}, status_code=400)
-
-    # Nur ganzzahlige, bekannte Slots zulassen
-    try:
-        slots = [int(s) for s in slots]
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "Ungültige Slot-Angabe."}, status_code=400)
-
-    all_results      = []
-    slots_checked    = 0
-    slot_errors      = []
-
-    for slot in slots:
-        ifc_path = get_ifc_path(session_id, slot)
-        if not os.path.exists(ifc_path):
-            slot_errors.append(f"Slot {slot}: Datei nicht gefunden.")
-            continue
-
-        file_label = get_ifc_label(session_id, slot, fallback=f"model_{slot}.ifc")
-        try:
-            model = ifcopenshell.open(ifc_path)
-        except Exception as exc:
-            slot_errors.append(f"Slot {slot}: IFC-Datei konnte nicht geöffnet werden – {exc}")
-            continue
-
-        results = run_rules_on_model(model, slot=slot, file_label=file_label, rules=rules)
-        all_results.extend(results)
-        slots_checked += 1
-
-    # Zusammenfassung berechnen
-    errors   = sum(1 for r in all_results if r["severity"] == "error")
-    warnings = sum(1 for r in all_results if r["severity"] == "warning")
-    infos    = sum(1 for r in all_results if r["severity"] == "info")
-
-    response_body: dict = {
-        "summary": {
-            "total":         len(all_results),
-            "errors":        errors,
-            "warnings":      warnings,
-            "infos":         infos,
-            "slots_checked": slots_checked,
-        },
-        "results": all_results,
-    }
-
-    if slot_errors:
-        response_body["slot_errors"] = slot_errors
-
-    return JSONResponse(response_body)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Route 3: GET /viewer/rulecheck/export/  – JSON-Export (Excel vorbereitet)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @rulecheck_router.get("/viewer/rulecheck/export/")
-def viewer_rulecheck_export(
-    session_id: str = Query(...),
-    slots: str      = Query(default=""),   # kommagetrennte Slot-Nummern
-    rules: str      = Query(default=""),   # kommagetrennte Regel-IDs
-):
-    """
-    Exportiert die Prüfergebnisse als JSON-Datei.
-
-    TODO (zukünftige Version): Excel-Export über openpyxl ergänzen.
-    Das Modul openpyxl ist bereits in requirements.txt enthalten.
-    Der JSON-Export dient als Basis und kann direkt in Excel importiert werden.
-    """
-    if not session_exists(session_id):
-        return Response(content="Session nicht gefunden.", status_code=404)
-
-    slot_list = []
-    for s in slots.split(","):
-        s = s.strip()
-        if s.isdigit():
-            slot_list.append(int(s))
-
-    rule_list = [r.strip() for r in rules.split(",") if r.strip()]
-
-    if not slot_list:
-        slot_list = get_session_slots(session_id)
-    if not rule_list:
-        rule_list = list(_RULE_FUNCTIONS.keys())
-
-    all_results = []
-    for slot in slot_list:
-        ifc_path = get_ifc_path(session_id, slot)
-        if not os.path.exists(ifc_path):
-            continue
-        file_label = get_ifc_label(session_id, slot, fallback=f"model_{slot}.ifc")
-        try:
-            model   = ifcopenshell.open(ifc_path)
-            results = run_rules_on_model(model, slot=slot, file_label=file_label, rules=rule_list)
-            all_results.extend(results)
-        except Exception:
-            continue
-
-    export_data = {
-        "session_id": session_id,
-        "summary": {
-            "total":    len(all_results),
-            "errors":   sum(1 for r in all_results if r["severity"] == "error"),
-            "warnings": sum(1 for r in all_results if r["severity"] == "warning"),
-            "infos":    sum(1 for r in all_results if r["severity"] == "info"),
-        },
-        "results": all_results,
-    }
-
-    content = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={"Content-Disposition": 'attachment; filename="rulecheck_export.json"'},
+def viewer_rulecheck_export_legacy():
+    """Legacy: Diese API ist nach /projects/{project_id}/checking/export verschoben."""
+    from fastapi.responses import Response as _R
+    return _R(
+        content="Dieser Endpunkt wurde nach /projects/{project_id}/checking/export verschoben.",
+        status_code=410,
     )
