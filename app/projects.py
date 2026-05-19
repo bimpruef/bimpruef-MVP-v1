@@ -9,11 +9,11 @@ Routen:
   GET  /projects/{project_id}/model → integrierter Model-/Viewer-Bereich
   GET  /projects/{project_id}/model/clash → integrierte Clash-Analyse
   GET  /projects/{project_id}/model/list → integrierte Elementliste
-  GET  /projects/{project_id}/model/rulecheck → integrierter Rule-Check
+  GET  /projects/{project_id}/model/rulecheck → Redirect → /projects/{project_id}/checking
   GET  /projects/{project_id}/documents  → Platzhalter
   GET  /projects/{project_id}/issues     → Platzhalter
   GET  /projects/{project_id}/todo       → Platzhalter
-  GET  /projects/{project_id}/checking   → Platzhalter
+  GET  /projects/{project_id}/checking   → Rule-Check Modul (Delegation an project_rulecheck)
   GET  /projects/{project_id}/settings   → Projekt-Einstellungen
 """
 
@@ -754,12 +754,8 @@ def project_list(request: Request, project_id: str):
 
 @projects_router.get("/projects/{project_id}/model/rulecheck", response_class=HTMLResponse)
 def project_model_rulecheck(request: Request, project_id: str):
-    loaded = _load_project_or_home(request, project_id)
-    if isinstance(loaded, RedirectResponse):
-        return loaded
-    _account, _project, sid = loaded
-    from app.rulecheck import viewer_rulecheck
-    return viewer_rulecheck(session_id=sid, project_id=project_id)
+    """Backward-compatible redirect: Rule-Check ist jetzt ein eigenständiges Projektmodul."""
+    return RedirectResponse(f"/projects/{_e(project_id)}/checking", status_code=302)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Platzhalter-Module
@@ -1126,13 +1122,11 @@ def project_todo(request: Request, project_id: str):
 
 
 @projects_router.get("/projects/{project_id}/checking", response_class=HTMLResponse)
-def project_checking(request: Request, project_id: str):
-    account = _account_from_request(request)
-    account_id = account["account_id"]
-    project = get_project(account_id, project_id)
-    if not project:
-        return RedirectResponse("/", status_code=302)
-    return _placeholder_page(project, account, "checking")
+def project_checking(request: Request, project_id: str,
+                     saved: str = Query(default=""), error: str = Query(default="")):
+    """Rule-Check als eigenständiges Projektmodul – Delegation an project_rulecheck."""
+    from app.project_rulecheck import project_checking_page
+    return project_checking_page(request, project_id, saved=saved, error=error)
 
 
 @projects_router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
