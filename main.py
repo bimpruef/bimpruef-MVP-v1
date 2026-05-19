@@ -11,7 +11,8 @@ Primäre Struktur (projects_router):
   /projects/{id}/model/remove    → Slot entfernen
   /projects/{id}/model/clash     → Clash-Analyse (Redirect → /projects/{id}/clash)
   /projects/{id}/model/list      → Redirect → /projects/{id}/list
-  /projects/{id}/model/rulecheck → Rule-Check
+  /projects/{id}/model/rulecheck → Redirect → /projects/{id}/checking
+  /projects/{id}/checking        → Rule-Check (eigenständiges Projektmodul)
   /projects/{id}/list            → Elementliste (eigenständiges Projektmodul)
 
 Technische API-Endpunkte:
@@ -19,7 +20,8 @@ Technische API-Endpunkte:
   /viewer/ai-chat/               → KI-Assistent
   /viewer/list/data/             → JSON-Daten-API Elementliste
   /viewer/list/export/           → Excel-Export Elementliste
-  /viewer/rulecheck/run/         → Rule-Check ausführen
+  /projects/{id}/checking/run    → Rule-Check ausführen (JSON-API)
+  /projects/{id}/checking/export → Rule-Check JSON-Export
 
 Legacy-Routen:
   /upload-session/
@@ -64,8 +66,8 @@ from app.legal_modules import render_datenschutz_module, render_impressum_module
 from app.list_module import list_router
 from app.projects import projects_router
 from app.project_clash import project_clash_router
+from app.project_rulecheck import project_rulecheck_router
 from app.r2_storage import download_file_from_r2, r2_enabled, upload_file_to_r2
-from app.rulecheck import rulecheck_router
 from app.storage import (
     cleanup_old_sessions,
     create_upload_session,
@@ -151,9 +153,9 @@ app.include_router(auth_router)
 # projects_router definiert "/" und muss vor viewer_router liegen.
 app.include_router(projects_router)
 app.include_router(project_clash_router)
+app.include_router(project_rulecheck_router)
 app.include_router(viewer_router)
 app.include_router(list_router)
-app.include_router(rulecheck_router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
