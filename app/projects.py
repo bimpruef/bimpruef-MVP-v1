@@ -6,14 +6,18 @@ Routen:
   GET  /projects/new               → Formular: neues Projekt anlegen
   POST /projects/create            → Projekt erstellen
   GET  /projects/{project_id}      → Projekt-Dashboard
-  GET  /projects/{project_id}/model → integrierter Model-/Viewer-Bereich
-  GET  /projects/{project_id}/model/clash → integrierte Clash-Analyse
-  GET  /projects/{project_id}/model/list → integrierte Elementliste
+  GET  /projects/{project_id}/model/clash     → Redirect → /projects/{project_id}/clash
+  GET  /projects/{project_id}/model/list      → Redirect → /projects/{project_id}/list
   GET  /projects/{project_id}/model/rulecheck → Redirect → /projects/{project_id}/checking
-  GET  /projects/{project_id}/documents  → Platzhalter
-  GET  /projects/{project_id}/issues     → Platzhalter
-  GET  /projects/{project_id}/checking   → Rule-Check Modul (Delegation an project_rulecheck)
-  GET  /projects/{project_id}/settings   → Projekt-Einstellungen
+  GET  /projects/{project_id}/list            → Elementliste (Projektmodul)
+  GET  /projects/{project_id}/documents       → Documents-Modul
+  GET  /projects/{project_id}/issues          → Issues-Modul
+  GET  /projects/{project_id}/checking        → Rule-Check-Modul
+  GET  /projects/{project_id}/settings        → Projekteinstellungen
+
+Der 3D-Viewer ist jetzt ein gleichrangiges Projektmodul unter
+  /projects/{project_id}/viewer/
+und wird von project_viewer.py (project_viewer_router) verwaltet.
 """
 
 import html
@@ -54,7 +58,6 @@ from app.document_storage import (
     list_documents,
     list_folders,
     list_project_ifc_documents,
-    prepare_viewer_session_from_project_documents,
     save_project_document,
 )
 
@@ -159,8 +162,8 @@ def _topbar_global(account: dict) -> str:
 def _project_subnav(project_id: str, active: str) -> str:
     pid = _e(project_id)
     items = [
-        ("dashboard",  f"/projects/{pid}",             "Dashboard"),
-        ("model",      f"/projects/{pid}/model",        "Model"),
+        ("dashboard",  f"/projects/{pid}",              "Dashboard"),
+        ("viewer",     f"/projects/{pid}/viewer/",      "Viewer"),
         ("documents",  f"/projects/{pid}/documents",    "Documents"),
         ("clash",      f"/projects/{pid}/clash",        "Clash"),
         ("list",       f"/projects/{pid}/list",         "List"),
@@ -597,6 +600,19 @@ def _load_project_or_home(request: Request, project_id: str) -> tuple[dict, dict
     return account, project, sid
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Model-Modul → Viewer (Rückwärtskompatibilität)
+# Alle /projects/{id}/model-Routen leiten auf das neue Viewer-Modul weiter.
+# Die eigentliche Implementierung liegt in project_viewer.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# HINWEIS: Die GET /projects/{project_id}/model und
+# POST /projects/{project_id}/model/load Routen werden jetzt von
+# project_viewer_router (project_viewer.py) bedient.
+# Die folgenden Redirects bleiben als benannte Routen für Links erhalten,
+# die noch /model/clash, /model/list oder /model/rulecheck verwenden.
+
+
 def _fmt_size(num: int) -> str:
     try:
         n = float(num or 0)
@@ -621,135 +637,42 @@ def _documents_url(project_id: str, folder_id: str = "", saved: str = "", error:
     return url + ("?" + "&".join(params) if params else "")
 
 
-def _render_model_select_page(project: dict, account: dict, session_id: str, error: str = "") -> HTMLResponse:
-    pid = project["project_id"]
-    docs = list_project_ifc_documents(account["account_id"], pid)
-    error_html = f'<div class="flash-err">{_e(error)}</div>' if error else ""
-
-    if not docs:
-        content = """
-        <div class="card" style="text-align:center;max-width:680px">
-          <h2 style="font-size:18px;margin-bottom:8px">Keine IFC-Modelle im Dokumentenbereich vorhanden.</h2>
-          <p style="color:var(--muted);font-size:13px;margin-bottom:18px">
-            Lade zuerst im Documents-Modul eine .ifc- oder .ifczip-Datei hoch. Das Model-Modul bietet keinen direkten Upload mehr an.
-          </p>
-          <a class="btn btn-primary" href="/projects/{pid}/documents" style="text-decoration:none">Zu Documents wechseln</a>
-        </div>
-        """.replace("{pid}", _e(pid))
-    else:
-        rows = ""
-        for d in docs:
-            rows += f"""
-            <tr>
-              <td style="width:38px;text-align:center"><input type="checkbox" name="document_ids" value="{_e(d['document_id'])}" checked></td>
-              <td style="font-weight:600;color:var(--accent)">{_e(d['original_filename'])}</td>
-              <td>{_e(d['file_extension'])}</td>
-              <td>{_fmt_size(d['file_size'])}</td>
-              <td style="color:var(--muted)">{_e(d.get('folder_path') or 'Root')}</td>
-              <td style="font-size:12px;color:var(--muted)">{_e(d.get('created_at','')[:10])}</td>
-            </tr>"""
-        content = f"""
-        <div class="card" style="max-width:960px">
-          <h2 style="font-size:18px;margin-bottom:8px">Modelle aus Documents laden</h2>
-          <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
-            Wähle die IFC/IFCZIP-Dokumente, die in den Viewer-Cache geladen werden sollen. Die dauerhafte Quelle bleibt Documents + R2.
-          </p>
-          <form method="POST" action="/projects/{_e(pid)}/model/load">
-            <table>
-              <tr><th></th><th>Name</th><th>Typ</th><th>Größe</th><th>Ordner</th><th>Upload</th></tr>
-              {rows}
-            </table>
-            <div style="display:flex;gap:10px;margin-top:16px">
-              <button type="submit" class="btn btn-primary">Ausgewählte Modelle laden</button>
-              <a class="btn" href="/projects/{_e(pid)}/documents" style="text-decoration:none">Documents öffnen</a>
-            </div>
-          </form>
-        </div>"""
-
-    body = (
-        f'{_topbar_global(account)}'
-        f'{_project_subnav(pid, "model")}'
-        '<div style="padding:28px 32px">'
-        f'{error_html}{content}'
-        '</div>'
-    )
-    return _page(f"{project['project_name']} – Model", body)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Model-Modul
+# Model-Modul → Viewer (Rückwärtskompatibilität)
+# Die Implementierung liegt in project_viewer.py (project_viewer_router).
+# Diese Stubs sorgen dafür, dass alte Links auf /model/clash, /model/list
+# und /model/rulecheck weiterhin funktionieren.
 # ─────────────────────────────────────────────────────────────────────────────
-
-@projects_router.get("/projects/{project_id}/model", response_class=HTMLResponse)
-def project_model(request: Request, project_id: str, error: str = Query(default=""), mode: str = Query(default="")):
-    """Integrated Model/Viewer area. Files come from Documents, not direct upload."""
-    loaded = _load_project_or_home(request, project_id)
-    if isinstance(loaded, RedirectResponse):
-        return loaded
-    account, project, sid = loaded
-
-    from app.storage import get_session_slots, session_exists
-    if mode == "select" or not session_exists(sid) or not get_session_slots(sid):
-        return _render_model_select_page(project, account, sid, error=error)
-
-    from app.viewer import viewer_main
-    return viewer_main(request, session_id=sid, error=error, project_id=project_id)
-
-
-@projects_router.post("/projects/{project_id}/model/load")
-def project_model_load(
-    request: Request,
-    project_id: str,
-    document_ids: list[str] = Form(default=[]),
-):
-    loaded = _load_project_or_home(request, project_id)
-    if isinstance(loaded, RedirectResponse):
-        return loaded
-    account, _project, sid = loaded
-    try:
-        prepare_viewer_session_from_project_documents(
-            account["account_id"],
-            project_id,
-            document_ids,
-            session_id=sid,
-        )
-        return RedirectResponse(f"/projects/{_e(project_id)}/model", status_code=303)
-    except Exception as exc:
-        return RedirectResponse(
-            f"/projects/{_e(project_id)}/model?mode=select&error={quote_plus(str(exc))}",
-            status_code=303,
-        )
-
 
 @projects_router.get("/projects/{project_id}/model/clash", response_class=HTMLResponse)
 def project_model_clash_redirect(request: Request, project_id: str):
-    """Backward-compatible redirect: Clash is now a project module."""
+    """Rückwärtskompatibilität: /model/clash → /clash"""
     return RedirectResponse(f"/projects/{_e(project_id)}/clash", status_code=302)
 
 
 @projects_router.get("/projects/{project_id}/model/list", response_class=HTMLResponse)
 def project_model_list_redirect(request: Request, project_id: str):
-    """Backward-compatible redirect: List ist jetzt ein eigenständiges Projektmodul."""
+    """Rückwärtskompatibilität: /model/list → /list"""
     return RedirectResponse(f"/projects/{_e(project_id)}/list", status_code=302)
+
+
+@projects_router.get("/projects/{project_id}/model/rulecheck", response_class=HTMLResponse)
+def project_model_rulecheck(request: Request, project_id: str):
+    """Rückwärtskompatibilität: /model/rulecheck → /checking"""
+    return RedirectResponse(f"/projects/{_e(project_id)}/checking", status_code=302)
 
 
 @projects_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
 def project_list(request: Request, project_id: str):
-    """List-Modul als eigenständiger Projektbereich (gleichrangig mit Documents, Issues usw.)."""
+    """List-Modul als eigenständiger Projektbereich."""
     account = _account_from_request(request)
     account_id = account["account_id"]
     project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
-    # Delegation an list_module – dort erfolgt Auth-Checks und Rendering
     from app.list_module import project_list as _list_view
     return _list_view(project_id=project_id, request=request)
 
-
-@projects_router.get("/projects/{project_id}/model/rulecheck", response_class=HTMLResponse)
-def project_model_rulecheck(request: Request, project_id: str):
-    """Backward-compatible redirect: Rule-Check ist jetzt ein eigenständiges Projektmodul."""
-    return RedirectResponse(f"/projects/{_e(project_id)}/checking", status_code=302)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Platzhalter-Module
@@ -858,7 +781,7 @@ def project_documents(
           <h1 style="font-size:22px;font-weight:600">Documents</h1>
           <div style="color:var(--muted);font-size:13px;margin-top:4px">{breadcrumb}</div>
         </div>
-        <a href="/projects/{_e(project_id)}/model?mode=select" class="btn" style="text-decoration:none">Model-Auswahl</a>
+        <a href="/projects/{_e(project_id)}/viewer/select" class="btn" style="text-decoration:none">Model-Auswahl</a>
       </div>
       {flash}
       <div style="display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:16px;align-items:start">
