@@ -6,25 +6,17 @@ Primäre Struktur (projects_router):
   /projects/new                  → Neues Projekt anlegen
   /projects/create               → Projekt erstellen (POST)
   /projects/{id}                 → Projekt-Dashboard
-
-Projektmodule (je ein eigener Router):
-  /projects/{id}/viewer/         → 3D-Viewer (project_viewer_router)
-  /projects/{id}/viewer/select   → Modell-Auswahl aus Documents
-  /projects/{id}/documents       → Dokument-Verwaltung
-  /projects/{id}/clash           → Clash-Analyse (project_clash_router)
-  /projects/{id}/list            → Elementliste (list_router)
-  /projects/{id}/issues          → Issues & BCF-Export
-  /projects/{id}/checking        → Rule-Check (project_rulecheck_router)
-  /projects/{id}/settings        → Projekt-Einstellungen
-
-Rückwärtskompatible Redirects:
-  /projects/{id}/model           → /projects/{id}/viewer/
-  /projects/{id}/model/clash     → /projects/{id}/clash
-  /projects/{id}/model/list      → /projects/{id}/list
-  /projects/{id}/model/rulecheck → /projects/{id}/checking
+  /projects/{id}/model           → Integrierter 3D-Viewer
+  /projects/{id}/model/upload    → IFC hochladen
+  /projects/{id}/model/remove    → Slot entfernen
+  /projects/{id}/model/clash     → Clash-Analyse (Redirect → /projects/{id}/clash)
+  /projects/{id}/model/list      → Redirect → /projects/{id}/list
+  /projects/{id}/model/rulecheck → Redirect → /projects/{id}/checking
+  /projects/{id}/checking        → Rule-Check (eigenständiges Projektmodul)
+  /projects/{id}/list            → Elementliste (eigenständiges Projektmodul)
 
 Technische API-Endpunkte:
-  /viewer/file/                  → IFC-Datei ausliefern (legacy session)
+  /viewer/file/                  → IFC-Datei ausliefern
   /viewer/ai-chat/               → KI-Assistent
   /viewer/list/data/             → JSON-Daten-API Elementliste
   /viewer/list/export/           → Excel-Export Elementliste
@@ -38,6 +30,9 @@ Legacy-Routen:
   /compare-elements/
   /compare-clashes/
   /download-clashes-bcf/
+
+Debug:
+  /debug/r2-test                 → Temporärer R2 upload/download test
 """
 
 import html
@@ -72,7 +67,6 @@ from app.list_module import list_router
 from app.projects import projects_router
 from app.project_clash import project_clash_router
 from app.project_rulecheck import project_rulecheck_router
-from app.project_viewer import project_viewer_router
 from app.r2_storage import download_file_from_r2, r2_enabled, upload_file_to_r2
 from app.storage import (
     cleanup_old_sessions,
@@ -156,9 +150,7 @@ async def authentication_middleware(request: Request, call_next):
 app.include_router(auth_router)
 
 # Reihenfolge wichtig:
-# project_viewer_router definiert /projects/{id}/viewer/ und /projects/{id}/model (redirect).
 # projects_router definiert "/" und muss vor viewer_router liegen.
-app.include_router(project_viewer_router)
 app.include_router(projects_router)
 app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
