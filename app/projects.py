@@ -12,7 +12,6 @@ Routen:
   GET  /projects/{project_id}/model/rulecheck → Redirect → /projects/{project_id}/checking
   GET  /projects/{project_id}/documents  → Platzhalter
   GET  /projects/{project_id}/issues     → Platzhalter
-  GET  /projects/{project_id}/todo       → Platzhalter
   GET  /projects/{project_id}/checking   → Rule-Check Modul (Delegation an project_rulecheck)
   GET  /projects/{project_id}/settings   → Projekt-Einstellungen
 """
@@ -166,7 +165,6 @@ def _project_subnav(project_id: str, active: str) -> str:
         ("clash",      f"/projects/{pid}/clash",        "Clash"),
         ("list",       f"/projects/{pid}/list",         "List"),
         ("issues",     f"/projects/{pid}/issues",       "Issues"),
-        ("todo",       f"/projects/{pid}/todo",         "To-do"),
         ("checking",   f"/projects/{pid}/checking",     "Checking"),
         ("settings",   f"/projects/{pid}/settings",     "Settings"),
     ]
@@ -558,10 +556,6 @@ def project_dashboard(request: Request, project_id: str):
         f'<div class="card" style="text-align:center">'
         f'<div style="font-size:28px;font-weight:700;color:var(--accent)">{issue_count}</div>'
         f'<div style="font-size:12px;color:var(--muted);margin-top:4px">Issues</div>'
-        f'</div>'
-        f'<div class="card" style="text-align:center">'
-        f'<div style="font-size:28px;font-weight:700;color:var(--muted)">–</div>'
-        f'<div style="font-size:12px;color:var(--muted);margin-top:4px">To-dos</div>'
         f'</div>'
         f'</div>'
     )
@@ -1111,16 +1105,6 @@ def project_issue_delete(request: Request, project_id: str, issue_id: str = Form
         return RedirectResponse(f"/projects/{_e(project_id)}/issues?error={quote_plus(str(exc))}", status_code=303)
 
 
-@projects_router.get("/projects/{project_id}/todo", response_class=HTMLResponse)
-def project_todo(request: Request, project_id: str):
-    account = _account_from_request(request)
-    account_id = account["account_id"]
-    project = get_project(account_id, project_id)
-    if not project:
-        return RedirectResponse("/", status_code=302)
-    return _placeholder_page(project, account, "todo")
-
-
 @projects_router.get("/projects/{project_id}/checking", response_class=HTMLResponse)
 def project_checking(request: Request, project_id: str,
                      saved: str = Query(default=""), error: str = Query(default="")):
@@ -1178,7 +1162,7 @@ def project_settings(
         '</div>'
         '</form>'
         '</div>'
-        
+
         '<div class="card" style="border-color:var(--accent2)">'
         '<h2 style="font-size:16px;margin-bottom:8px;color:#ffb3b3">Projekt vollständig löschen</h2>'
         '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">'
