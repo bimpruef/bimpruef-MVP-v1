@@ -1321,20 +1321,12 @@ def _ai_chat_widget(session_id: str, slots: list) -> str:
 # Gemeinsamer 3D-Viewer JavaScript-Block
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _viewer_js(
-    model_urls_js: str,
-    highlight_gids: list = None,
-    session_id: str = "",
-    element_update_url: str = "/viewer/element/update/",
-    export_ifc_url: str = "/viewer/export-ifc/",
-) -> str:
+def _viewer_js(model_urls_js: str, highlight_gids: list = None, session_id: str = "") -> str:
     """
     Vollständiger JS-Block für den 3D-Viewer.
     model_urls_js: komma-getrennter JS-Array-Inhalt mit {url, label, slot, color}
     highlight_gids: wenn gesetzt → alle anderen Elemente werden auf 5 % Opacity gedimmt
     session_id: wird als globale JS-Variable SESSION_ID eingebettet
-    element_update_url: Endpunkt für Element-Eigenschaften-Update (kann überschrieben werden)
-    export_ifc_url: Endpunkt für IFC-Export (kann überschrieben werden)
     """
 
     if highlight_gids:
@@ -2081,12 +2073,12 @@ function _renderInfoPanel(d) {
     </button>
   </div>
   <div style="display:flex;gap:5px">
-    <a href="{export_ifc_url}?session_id=${{esc(SESSION_ID)}}&slot=${{esc(String(_editSlot))}}&fmt=ifc"
+    <a href="/viewer/export-ifc/?session_id=${esc(SESSION_ID)}&slot=${esc(String(_editSlot))}&fmt=ifc"
       style="flex:1;padding:6px;background:#0a1a30;border:1px solid #1e3a6e;color:#7ab8e8;
       border-radius:6px;font-size:11px;text-align:center;text-decoration:none">
       ⬇ Export .ifc
     </a>
-    <a href="{export_ifc_url}?session_id=${{esc(SESSION_ID)}}&slot=${{esc(String(_editSlot))}}&fmt=ifczip"
+    <a href="/viewer/export-ifc/?session_id=${esc(SESSION_ID)}&slot=${esc(String(_editSlot))}&fmt=ifczip"
       style="flex:1;padding:6px;background:#0a1a30;border:1px solid #1e3a6e;color:#7ab8e8;
       border-radius:6px;font-size:11px;text-align:center;text-decoration:none">
       ⬇ Export .ifczip
@@ -2253,7 +2245,7 @@ async function saveElementChanges() {
 
   // ── POST to server ───────────────────────────────────────────────────────
   try {
-    const resp = await fetch({repr(element_update_url)}, {{
+    const resp = await fetch("/viewer/element/update/", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({
