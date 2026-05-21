@@ -1,8 +1,9 @@
 """
 project_storage.py – BIMPruef project management
 
-Stores projects in PostgreSQL.
-Each project receives an upload session for the existing viewer/storage logic.
+Projects are stored in PostgreSQL. Documents are the permanent project file
+source. The attached viewer session is only a derived runtime cache that can be
+rebuilt from project Documents.
 """
 
 import re
@@ -63,11 +64,6 @@ def _project_to_dict(project: Project) -> dict:
 def get_account(account_id: str) -> dict:
     """
     Return a minimal account descriptor for *account_id*.
-
-    The platform currently models accounts as users; this helper produces a
-    lightweight dict suitable for display without loading the full User record.
-    If a richer account model is introduced later this function is the single
-    place to update.
     """
     account_id = str(account_id or "").strip()
     return {
@@ -145,12 +141,6 @@ def update_project(
     description: Optional[str] = None,
     status: Optional[str] = None,
 ) -> dict:
-    """
-    Update mutable fields of a project.
-
-    Raises:
-        NotFoundError: when the project does not exist.
-    """
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
 
@@ -186,14 +176,6 @@ def update_project(
 def delete_project(account_id: str, project_id: str) -> None:
     """
     Delete a project completely.
-
-    Deletion order:
-      1. Verify that the project belongs to the current account.
-      2. Delete the attached upload/session storage from R2 and local cache.
-      3. Delete the SQL Project row.
-
-    Storage cleanup happens before SQL deletion. This prevents the dangerous
-    case where the database row is gone but R2 files remain orphaned.
     """
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
@@ -213,7 +195,6 @@ def delete_project(account_id: str, project_id: str) -> None:
 
         session_id = project.session_id
 
-        # 1) Delete permanent project documents in R2 first.
         try:
             from app.document_storage import delete_project_documents_prefix
             delete_project_documents_prefix(project_id, strict=True)
@@ -226,10 +207,9 @@ def delete_project(account_id: str, project_id: str) -> None:
                 f"Projektdokumente konnten nicht vollständig gelöscht werden: {exc}"
             ) from exc
 
-        # 2) Delete the derived viewer/session cache in R2/local storage.
         if session_id:
             try:
-                from app.storage import delete_session  # local import avoids circular import
+                from app.storage import delete_session
                 delete_session(session_id, strict=True)
             except StorageError:
                 db.rollback()
@@ -240,7 +220,6 @@ def delete_project(account_id: str, project_id: str) -> None:
                     f"Viewer-Session-Dateien konnten nicht vollständig gelöscht werden: {exc}"
                 ) from exc
 
-        # 3) Delete SQL document/folder records, then the project row.
         try:
             db.query(ProjectDocument).filter(ProjectDocument.project_id == project_id).delete(synchronize_session=False)
             db.query(ProjectFolder).filter(ProjectFolder.project_id == project_id).delete(synchronize_session=False)
@@ -257,7 +236,7 @@ def delete_project(account_id: str, project_id: str) -> None:
 
 
 def get_project_session(account_id: str, project_id: str) -> Optional[str]:
-    """Return the upload session ID attached to the project, or None."""
+    """Return the upload/runtime session ID attached to the project, or None."""
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
 
@@ -275,12 +254,38 @@ def get_project_session(account_id: str, project_id: str) -> Optional[str]:
         return project.session_id or None
 
 
+def _sync_viewer_cache_from_documents(account_id: str, project_id: str, session_id: str) -> str:
+    """
+    Rebuild the viewer runtime cache from the project's IFC/IFCZIP documents.
+
+    Documents remain the permanent source. The session is only a cache used by
+    the existing viewer, list, clash and rule-check code paths.
+    """
+    from app.document_storage import (
+        list_project_ifc_documents,
+        prepare_viewer_session_from_project_documents,
+    )
+
+    docs = list_project_ifc_documents(account_id, project_id)
+    if not docs:
+        return session_id
+
+    return prepare_viewer_session_from_project_documents(
+        account_id,
+        project_id,
+        [d["document_id"] for d in docs],
+        session_id=session_id,
+    )
+
+
 def get_or_create_project_session(account_id: str, project_id: str) -> str:
     """
-    Return the existing upload session for the project, or create one.
+    Return the project's runtime viewer session and keep it synchronized with
+    Documents when IFC/IFCZIP files exist.
 
-    Raises:
-        NotFoundError: when the project does not exist.
+    The session is no longer a separate upload source. It is rebuilt from
+    project Documents so /projects/{project_id}/model can open directly without
+    a separate Viewer upload or manual file selection.
     """
     account_id = _validate_safe_id(account_id, "account_id")
     project_id = _validate_safe_id(project_id, "project_id")
@@ -299,22 +304,24 @@ def get_or_create_project_session(account_id: str, project_id: str) -> str:
             raise NotFoundError(f"Project '{project_id}' not found.")
 
         if project.session_id and session_exists(project.session_id):
-            return project.session_id
+            session_id = project.session_id
+        else:
+            session_id = create_upload_session()
+            project.session_id = session_id
+            project.updated_at = _utcnow()
+            db.commit()
 
-        session_id = create_upload_session()
-        project.session_id = session_id
-        project.updated_at = _utcnow()
-        db.commit()
+    try:
+        return _sync_viewer_cache_from_documents(account_id, project_id, session_id)
+    except Exception:
+        # Dashboard and navigation must not fail because of a transient R2/cache
+        # issue. The Model route can still show the Documents-based selection or
+        # an error message from its own flow.
         return session_id
 
 
-
-
 def get_all_project_session_ids() -> set[str]:
-    """Return all upload session IDs currently attached to projects.
-
-    Storage cleanup uses this to avoid deleting persistent project models.
-    """
+    """Return all upload/runtime session IDs currently attached to projects."""
     with SessionLocal() as db:
         rows = (
             db.query(Project.session_id)
