@@ -67,6 +67,7 @@ from app.list_module import list_router
 from app.projects import projects_router
 from app.project_clash import project_clash_router
 from app.project_rulecheck import project_rulecheck_router
+from app.project_viewer import project_viewer_router
 from app.r2_storage import download_file_from_r2, r2_enabled, upload_file_to_r2
 from app.storage import (
     cleanup_old_sessions,
@@ -150,7 +151,10 @@ async def authentication_middleware(request: Request, call_next):
 app.include_router(auth_router)
 
 # Reihenfolge wichtig:
-# projects_router definiert "/" und muss vor viewer_router liegen.
+# project_viewer_router muss vor projects_router stehen, weil beide
+# /projects/{project_id}/model definieren. Dadurch wird der neue integrierte
+# Project-Viewer aktiv und nicht die ältere Model-Route aus projects.py.
+app.include_router(project_viewer_router)
 app.include_router(projects_router)
 app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
