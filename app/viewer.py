@@ -24,6 +24,8 @@ import urllib.parse
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from app.auth import require_user
+
 from app.storage import (
     ALLOWED_EXTENSIONS,
     MAX_FILES_PER_SESSION,
@@ -36,6 +38,12 @@ from app.storage import (
     save_clash_cache,
     save_ifc_file,
     session_exists,
+)
+
+from app.project_ifc_cache import (
+    get_cached_ifc_path,
+    get_document_ifc_index,
+    get_project_ifc_index,
 )
 
 router = APIRouter()
@@ -234,7 +242,35 @@ def _slot_color(slot: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/viewer/file/")
-def viewer_file(session_id: str = Query(...), slot: int = Query(default=1)):
+def viewer_file(
+    request: Request,
+    session_id: str = Query(default=""),
+    slot: int = Query(default=1),
+    project_id: str = Query(default=""),
+    document_id: str = Query(default=""),
+):
+    # Neuer projektbezogener Weg: Viewer liest direkt aus Project IFC Cache.
+    if project_id and document_id:
+        try:
+            user = require_user(request)
+            account_id = user["user_id"]
+            path = get_cached_ifc_path(account_id, project_id, document_id)
+            idx = get_document_ifc_index(account_id, project_id, document_id)
+        except Exception as exc:
+            return Response(content=f"Project IFC Cache nicht verfügbar: {exc}", status_code=404)
+        if not os.path.exists(path):
+            return Response(content="IFC-Cache-Datei nicht gefunden.", status_code=404)
+        with open(path, "rb") as f:
+            data = f.read()
+        label = idx.get("original_filename") or f"{document_id}.ifc"
+        dl_name = label if label.lower().endswith(".ifc") else label.rsplit(".", 1)[0] + ".ifc"
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+        )
+
+    # LEGACY: Session-/Slot-basierter Dateizugriff.
     if not session_exists(session_id):
         return Response(content="Session nicht gefunden.", status_code=404)
     path = get_ifc_path(session_id, slot)
@@ -243,7 +279,6 @@ def viewer_file(session_id: str = Query(...), slot: int = Query(default=1)):
     with open(path, "rb") as f:
         data = f.read()
     label = get_ifc_label(session_id, slot, f"model_{slot}.ifc")
-    # Dateiname für Download immer als .ifc (auch wenn Original .ifczip war)
     dl_name = label if label.lower().endswith(".ifc") else label.rsplit(".", 1)[0] + ".ifc"
     return Response(
         content=data,
@@ -573,21 +608,32 @@ def viewer_export_ifc(
 @router.get("/viewer/", response_class=HTMLResponse)
 def viewer_main(request: Request, session_id: str = Query(default=""), error: str = Query(default=""), project_id: str = Query(default="")):
 
-    # Keine Cookie-Session-Wiederverwendung mehr.
-    # Falls session_id fehlt oder ungültig → neue Session erstellen.
-    if not session_id or not session_exists(session_id):
-        session_id = create_upload_session()
-
-    sid    = _e(session_id)
-    slots  = get_session_slots(session_id)
-    labels = {s: _e(get_ifc_label(session_id, s)) for s in slots}
-
-    # JS-Array mit Modell-URLs
-    model_urls_js = ",\n".join(
-        f'{{url:"/viewer/file/?session_id={sid}&slot={s}",'
-        f'label:{repr(labels[s])},slot:{s},color:{repr(_slot_color(s))}}}'
-        for s in slots
-    )
+    project_documents = []
+    if project_id:
+        user = require_user(request)
+        pidx = get_project_ifc_index(user["user_id"], project_id)
+        project_documents = pidx.get("documents", []) or []
+        session_id = session_id or f"project-{project_id}"
+        slots = list(range(1, len(project_documents) + 1))
+        labels = {i + 1: _e(d.get("original_filename", f"model_{i+1}.ifc")) for i, d in enumerate(project_documents)}
+        sid = _e(session_id)
+        model_urls_js = ",\n".join(
+            f'{{url:"/viewer/file/?project_id={_e(project_id)}&document_id={_e(d.get("document_id", ""))}",'
+            f'label:{repr(_e(d.get("original_filename", "")))},slot:{i+1},color:{repr(_slot_color(i+1))}}}'
+            for i, d in enumerate(project_documents)
+        )
+    else:
+        # LEGACY: anonyme Session-/Slot-Verarbeitung.
+        if not session_id or not session_exists(session_id):
+            session_id = create_upload_session()
+        sid    = _e(session_id)
+        slots  = get_session_slots(session_id)
+        labels = {s: _e(get_ifc_label(session_id, s)) for s in slots}
+        model_urls_js = ",\n".join(
+            f'{{url:"/viewer/file/?session_id={sid}&slot={s}",'
+            f'label:{repr(labels[s])},slot:{s},color:{repr(_slot_color(s))}}}'
+            for s in slots
+        )
 
     # Hinweis wenn leer – Upload läuft jetzt ausschließlich über Documents.
     if slots:
@@ -622,7 +668,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
       flex-shrink:0;display:inline-block"></span>
     <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
       title="{lbl}">{lbl}</span>
-    <form method="post" action="/viewer/remove/" style="display:inline;margin:0"
+    <form method="post" action="/viewer/remove/" style="display:{'none' if project_id else 'inline'};margin:0"
       onsubmit="return confirm('Datei \\'{escaped_lbl}\\' wirklich schließen?')">
       <input type="hidden" name="session_id" value="{sid}">
       <input type="hidden" name="project_id" value="{_e(project_id)}">

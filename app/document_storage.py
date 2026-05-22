@@ -455,7 +455,17 @@ def save_project_document(
                 pass
             raise
         db.refresh(doc)
-        return _document_to_dict(doc)
+        result = _document_to_dict(doc)
+
+        # Project IFC Cache: neue/ersetzte IFC-Dokumente werden beim nächsten Zugriff neu aufgebaut.
+        if ext in {".ifc", ".ifczip"}:
+            try:
+                from app.project_ifc_cache import invalidate_document_ifc_cache
+                invalidate_document_ifc_cache(account_id, project_id, document_id)
+            except Exception:
+                pass
+
+        return result
 
 
 def download_document_to_temp(account_id: str, project_id: str, document_id: str) -> tuple[dict, str]:
@@ -494,8 +504,17 @@ def delete_document(account_id: str, project_id: str, document_id: str) -> None:
         except Exception as exc:
             db.rollback()
             raise StorageError(f"R2-Datei konnte nicht gelöscht werden. SQL wurde nicht verändert: {exc}") from exc
+        deleted_ext = (doc.file_extension or "").lower()
         db.delete(doc)
         db.commit()
+
+        # Project IFC Cache: lokale Ableitungen des gelöschten Dokuments entfernen.
+        if deleted_ext in {".ifc", ".ifczip"}:
+            try:
+                from app.project_ifc_cache import invalidate_document_ifc_cache
+                invalidate_document_ifc_cache(account_id, project_id, document_id)
+            except Exception:
+                pass
 
 
 def delete_project_documents_prefix(project_id: str, strict: bool = True) -> None:
@@ -517,7 +536,11 @@ def prepare_viewer_session_from_project_documents(
     document_ids: list[str],
     session_id: str = "",
 ) -> str:
-    """Copy selected IFC/IFCZIP ProjectDocument objects into the viewer slot cache."""
+    """LEGACY: Copy selected IFC/IFCZIP ProjectDocument objects into the old viewer slot cache.
+
+    New project modules must use app.project_ifc_cache instead. This function
+    is intentionally kept only for older routes/backward compatibility.
+    """
     clean_ids = []
     seen = set()
     for did in document_ids:

@@ -31,6 +31,12 @@ from app.document_storage import (
     prepare_viewer_session_from_project_documents,
 )
 from app.project_storage import get_or_create_project_session, get_project
+from app.project_ifc_cache import (
+    document_index_by_slot,
+    ensure_document_ifc_cache,
+    get_cached_ifc_path,
+    get_project_ifc_index,
+)
 from app.rulecheck import ALL_RULES, _RULE_FUNCTIONS, run_rules_on_model
 from app.storage import get_ifc_label, get_ifc_path, get_session_slots, session_exists
 
@@ -84,12 +90,16 @@ def _documents_panel(account: dict, project_id: str, slots: list[int],
     docs = list_project_ifc_documents(account["account_id"], project_id)
 
     if slots:
-        slot_hint = "Aktuell geladene Modelle: " + ", ".join(
-            f"Slot {s}: {_e(get_ifc_label(session_id, s))}"
-            for s in slots
-        )
+        try:
+            pidx = get_project_ifc_index(account["account_id"], project_id)
+            slot_hint = "Project IFC Index: " + ", ".join(
+                f"{i+1}: {_e(d.get('original_filename', ''))}"
+                for i, d in enumerate(pidx.get("documents", []) or [])
+            )
+        except Exception:
+            slot_hint = "Project IFC Index konnte noch nicht gelesen werden."
     else:
-        slot_hint = "Keine Modelle in den Checking-Cache geladen."
+        slot_hint = "Project IFC Index noch nicht aufgebaut."
 
     flash = ""
     if error:
@@ -160,7 +170,13 @@ def _checking_page(project: dict, account: dict, session_id: str,
     from app.projects import _page, _project_subnav, _topbar_global
 
     project_id = project["project_id"]
-    slots = get_session_slots(session_id) if session_exists(session_id) else []
+    try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        project_docs = pidx.get("documents", []) or []
+    except Exception:
+        project_docs = []
+    slots = list(range(1, len(project_docs) + 1))
+    slot_labels = {i + 1: d.get("original_filename", f"model_{i+1}.ifc") for i, d in enumerate(project_docs)}
     docs_panel = _documents_panel(account, project_id, slots, session_id,
                                   saved=saved, error=error)
 
@@ -174,7 +190,7 @@ def _checking_page(project: dict, account: dict, session_id: str,
     else:
         slots_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">'
         for s in slots:
-            label = _e(get_ifc_label(session_id, s))
+            label = _e(slot_labels.get(s, f"model_{s}.ifc"))
             slots_html += (
                 f'<label style="display:flex;align-items:center;gap:6px;'
                 f'background:var(--surface2);border:1px solid var(--border);'
@@ -479,12 +495,8 @@ def project_checking_load(
     if not project:
         return RedirectResponse("/", status_code=302)
     try:
-        prepare_viewer_session_from_project_documents(
-            account["account_id"],
-            project_id,
-            document_ids,
-            session_id=session_id,
-        )
+        for did in document_ids:
+            ensure_document_ifc_cache(account["account_id"], project_id, did)
         return RedirectResponse(
             f"/projects/{_e(project_id)}/checking?saved=load",
             status_code=303,
@@ -510,9 +522,6 @@ async def project_checking_run(request: Request, project_id: str):
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return JSONResponse({"error": "Projekt nicht gefunden."}, status_code=404)
-    if not session_exists(session_id):
-        return JSONResponse({"error": "Projekt-Session nicht gefunden."}, status_code=404)
-
     try:
         body = await request.json()
     except Exception:
@@ -531,23 +540,25 @@ async def project_checking_run(request: Request, project_id: str):
     except (TypeError, ValueError):
         return JSONResponse({"error": "Ungültige Slot-Angabe."}, status_code=400)
 
-    # Nur tatsächlich vorhandene Slots zulassen
-    available_slots = get_session_slots(session_id)
+    pidx = get_project_ifc_index(account["account_id"], project_id)
+    available_slots = list(range(1, len(pidx.get("documents", []) or []) + 1))
     slots = [s for s in slots if s in available_slots]
     if not slots:
-        return JSONResponse({"error": "Keine der angegebenen Slots sind in der Session vorhanden."}, status_code=400)
+        return JSONResponse({"error": "Keine der angegebenen Dokumente sind im Project IFC Index vorhanden."}, status_code=400)
 
     all_results:   list = []
     slots_checked: int  = 0
     slot_errors:   list = []
 
     for slot in slots:
-        ifc_path = get_ifc_path(session_id, slot)
-        if not os.path.exists(ifc_path):
-            slot_errors.append(f"Slot {slot}: Datei nicht gefunden.")
+        try:
+            didx = document_index_by_slot(pidx, slot)
+            ifc_path = get_cached_ifc_path(account["account_id"], project_id, didx["document_id"])
+        except Exception as exc:
+            slot_errors.append(f"Dokument {slot}: Datei nicht gefunden – {exc}")
             continue
 
-        file_label = get_ifc_label(session_id, slot, fallback=f"model_{slot}.ifc")
+        file_label = didx.get("original_filename", f"model_{slot}.ifc")
         try:
             model = ifcopenshell.open(ifc_path)
         except Exception as exc:
@@ -589,9 +600,6 @@ def project_checking_export(
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return Response(content="Projekt nicht gefunden.", status_code=404)
-    if not session_exists(session_id):
-        return Response(content="Projekt-Session nicht gefunden.", status_code=404)
-
     slot_list: list[int] = []
     for s in slots.split(","):
         s = s.strip()
@@ -600,17 +608,20 @@ def project_checking_export(
 
     rule_list = [r.strip() for r in rules.split(",") if r.strip()]
 
+    pidx = get_project_ifc_index(account["account_id"], project_id)
     if not slot_list:
-        slot_list = get_session_slots(session_id)
+        slot_list = list(range(1, len(pidx.get("documents", []) or []) + 1))
     if not rule_list:
         rule_list = list(_RULE_FUNCTIONS.keys())
 
     all_results: list = []
     for slot in slot_list:
-        ifc_path = get_ifc_path(session_id, slot)
-        if not os.path.exists(ifc_path):
+        try:
+            didx = document_index_by_slot(pidx, slot)
+            ifc_path = get_cached_ifc_path(account["account_id"], project_id, didx["document_id"])
+        except Exception:
             continue
-        file_label = get_ifc_label(session_id, slot, fallback=f"model_{slot}.ifc")
+        file_label = didx.get("original_filename", f"model_{slot}.ifc")
         try:
             model   = ifcopenshell.open(ifc_path)
             results = run_rules_on_model(model, slot=slot, file_label=file_label, rules=rule_list)

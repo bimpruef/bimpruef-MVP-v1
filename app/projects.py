@@ -43,6 +43,8 @@ from app.project_storage import (
 )
 
 
+from app.project_ifc_cache import ensure_project_ifc_cache, ensure_document_ifc_cache
+
 from app.document_storage import (
     MAX_DOCUMENT_SIZE_MB,
     create_folder,
@@ -688,8 +690,12 @@ def project_model(request: Request, project_id: str, error: str = Query(default=
         return loaded
     account, project, sid = loaded
 
-    from app.storage import get_session_slots, session_exists
-    if mode == "select" or not session_exists(sid) or not get_session_slots(sid):
+    try:
+        pidx = ensure_project_ifc_cache(account["account_id"], project_id)
+    except Exception as exc:
+        return _render_model_select_page(project, account, sid, error=str(exc))
+
+    if mode == "select" or not pidx.get("documents"):
         return _render_model_select_page(project, account, sid, error=error)
 
     from app.viewer import viewer_main
@@ -707,12 +713,8 @@ def project_model_load(
         return loaded
     account, _project, sid = loaded
     try:
-        prepare_viewer_session_from_project_documents(
-            account["account_id"],
-            project_id,
-            document_ids,
-            session_id=sid,
-        )
+        for did in document_ids:
+            ensure_document_ifc_cache(account["account_id"], project_id, did)
         return RedirectResponse(f"/projects/{_e(project_id)}/model", status_code=303)
     except Exception as exc:
         return RedirectResponse(

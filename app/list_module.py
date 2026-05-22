@@ -37,6 +37,11 @@ from app.extractors import (
     get_candidate_products,
 )
 from app.project_storage import get_or_create_project_session, get_project
+from app.project_ifc_cache import (
+    document_index_by_slot,
+    ensure_document_ifc_cache,
+    get_project_ifc_index,
+)
 from app.storage import get_ifc_label, get_ifc_path, get_session_slots, session_exists
 
 list_router = APIRouter()
@@ -229,13 +234,17 @@ def _load_documents_panel(
 ) -> str:
     """Rendert die Dokumentenliste für den List-Modul-Cache."""
     docs = list_project_ifc_documents(account["account_id"], project_id)
-    slots = get_session_slots(session_id) if session_exists(session_id) else []
+    try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        cached_docs = pidx.get("documents", []) or []
+    except Exception:
+        cached_docs = []
 
-    slot_hint = "Keine Modelle im Listen-Cache geladen."
-    if slots:
-        slot_hint = "Aktuell geladene Modelle: " + ", ".join(
-            f"Slot {s}: {_e(get_ifc_label(session_id, s))}"
-            for s in slots
+    slot_hint = "Project IFC Index noch nicht aufgebaut."
+    if cached_docs:
+        slot_hint = "Project IFC Index: " + ", ".join(
+            f"{i+1}: {_e(d.get('original_filename', ''))}"
+            for i, d in enumerate(cached_docs)
         )
 
     flash = ""
@@ -571,9 +580,8 @@ def project_list_load(
         return RedirectResponse("/", status_code=302)
 
     try:
-        prepare_viewer_session_from_project_documents(
-            account["account_id"], project_id, document_ids, session_id=session_id
-        )
+        for did in document_ids:
+            ensure_document_ifc_cache(account["account_id"], project_id, did)
         return RedirectResponse(
             f"/projects/{_e(project_id)}/list?saved=load", status_code=303
         )
@@ -583,6 +591,118 @@ def project_list_load(
             status_code=303,
         )
 
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Project-IFC-Index API (neuer Weg ohne Viewer-Session)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _project_elements_from_index(account_id: str, project_id: str, slots: str, filters: list, columns: list) -> tuple[list, list, int]:
+    pidx = get_project_ifc_index(account_id, project_id)
+    docs = pidx.get("documents", []) or []
+    if slots.strip():
+        try:
+            selected_slots = [int(s) for s in slots.split(",") if s.strip()]
+        except ValueError:
+            selected_slots = list(range(1, len(docs) + 1))
+    else:
+        selected_slots = list(range(1, len(docs) + 1))
+
+    elements = []
+    for slot in selected_slots:
+        try:
+            didx = document_index_by_slot(pidx, slot)
+        except Exception:
+            continue
+        for elem in didx.get("elements", []) or []:
+            row = dict(elem)
+            row["slot"] = slot
+            row["file_label"] = didx.get("original_filename", row.get("file_label", ""))
+            elements.append(row)
+
+    filtered = _apply_filters(elements, filters)
+    return elements, filtered, len(elements)
+
+
+@list_router.get("/projects/{project_id}/list/meta/")
+def project_list_meta_api(request: Request, project_id: str, slots: str = Query(default=""), include_psets: bool = Query(default=False)):
+    account = _account_from_request(request)
+    elements, _filtered, total = _project_elements_from_index(account["account_id"], project_id, slots, [], [])
+    # Der aktuelle Project IFC Index speichert Basisdaten. Psets sind als spätere Erweiterung vorbereitet.
+    return JSONResponse({"total": total, "pset_keys": [], "psets_loaded": False})
+
+
+@list_router.get("/projects/{project_id}/list/data/")
+def project_list_data_api(
+    request: Request,
+    project_id: str,
+    slots: str = Query(default=""),
+    filters_json: str = Query(default="[]"),
+    columns_json: str = Query(default="[]"),
+):
+    account = _account_from_request(request)
+    filters = _parse_json_list(filters_json)
+    columns = _parse_json_list(columns_json)
+    elements, filtered, total = _project_elements_from_index(account["account_id"], project_id, slots, filters, columns)
+    rows = []
+    for elem in filtered:
+        rows.append({
+            "file_label": elem.get("file_label", ""),
+            "slot": elem.get("slot", ""),
+            "express_id": elem.get("express_id", ""),
+            "type": elem.get("type", ""),
+            "name": elem.get("name", ""),
+            "global_id": elem.get("global_id", ""),
+            "object_type": elem.get("object_type", ""),
+            "predefined_type": elem.get("predefined_type", ""),
+        })
+    return JSONResponse({"total": total, "filtered": len(rows), "pset_keys": [], "psets_loaded": False, "rows": rows})
+
+
+@list_router.get("/projects/{project_id}/list/export/")
+def project_list_export_excel(
+    request: Request,
+    project_id: str,
+    slots: str = Query(default=""),
+    filters_json: str = Query(default="[]"),
+    columns_json: str = Query(default="[]"),
+):
+    account = _account_from_request(request)
+    filters = _parse_json_list(filters_json)
+    columns = _parse_json_list(columns_json)
+    elements, filtered, total = _project_elements_from_index(account["account_id"], project_id, slots, filters, columns)
+    try:
+        import openpyxl
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return Response(content="openpyxl nicht installiert.", status_code=500)
+
+    base_cols = [
+        ("file_label", "Datei"), ("slot", "Slot"), ("express_id", "Express-ID"),
+        ("type", "IFC-Typ"), ("name", "Name"), ("global_id", "GlobalId"),
+        ("object_type", "ObjectType"), ("predefined_type", "PredefinedType"),
+    ]
+    selected = [c for c in columns if c in {k for k, _ in base_cols}]
+    export_cols = [(k, lbl) for k, lbl in base_cols if not selected or k in selected]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "BIMPruef Elementliste"
+    for col_idx, (_key, label) in enumerate(export_cols, start=1):
+        ws.cell(row=1, column=col_idx).value = label
+    for row_idx, elem in enumerate(filtered, start=2):
+        for col_idx, (key, _label) in enumerate(export_cols, start=1):
+            ws.cell(row=row_idx, column=col_idx).value = elem.get(key, "")
+    for col_idx, (_key, label) in enumerate(export_cols, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(12, min(50, len(label) + 8))
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="bimpruef_elementliste.xlsx"'},
+    )
 
 @list_router.get("/viewer/list/", response_class=HTMLResponse)
 def viewer_list(session_id: str = Query(...), project_id: str = Query(default="")):
@@ -624,7 +744,13 @@ def _render_list_page(
     from app.projects import _page, _project_subnav, _topbar_global
 
     project_id = project["project_id"]
-    slots = get_session_slots(session_id) if session_exists(session_id) else []
+    try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        project_docs = pidx.get("documents", []) or []
+    except Exception:
+        project_docs = []
+    slots = list(range(1, len(project_docs) + 1))
+    slot_labels = {i + 1: d.get("original_filename", f"model_{i+1}.ifc") for i, d in enumerate(project_docs)}
 
     documents_panel = _load_documents_panel(
         account, project_id, session_id, saved=saved, error=error
@@ -652,6 +778,7 @@ def _render_list_page(
         slots=slots,
         documents_panel_html=documents_panel,
         nav_height=nav_height,
+        slot_labels=slot_labels,
     )}
     """
     return _page(f"{project['project_name']} – Liste", body)
@@ -689,6 +816,7 @@ def _render_list_ui_inner(
     slots: list,
     documents_panel_html: str,
     nav_height: str,
+    slot_labels: dict | None = None,
 ) -> str:
     """Gibt den inneren HTML-String der zweispaltigen List-UI zurück."""
     sid = _e(session_id)
@@ -711,8 +839,9 @@ def _render_list_ui_inner(
     </details>"""
 
     slot_checkboxes = ""
+    slot_labels = slot_labels or {}
     for s in slots:
-        label = _e(get_ifc_label(session_id, s))
+        label = _e(slot_labels.get(s) or get_ifc_label(session_id, s))
         slot_checkboxes += f"""
 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;
   padding:4px 8px;border:1px solid var(--border);border-radius:5px;
@@ -852,8 +981,10 @@ def _render_list_ui_inner(
 (function() {{
 
 const SESSION_ID  = {json.dumps(session_id)};
-const API_BASE    = "/viewer/list/data/";
-const EXPORT_BASE = "/viewer/list/export/";
+const PROJECT_ID  = {json.dumps(project_id)};
+const API_BASE    = PROJECT_ID ? `/projects/${PROJECT_ID}/list/data/` : "/viewer/list/data/";
+const META_BASE   = PROJECT_ID ? `/projects/${PROJECT_ID}/list/meta/` : "/viewer/list/meta/";
+const EXPORT_BASE = PROJECT_ID ? `/projects/${PROJECT_ID}/list/export/` : "/viewer/list/export/";
 
 let allElements   = [];
 let psetKeys      = [];
@@ -1194,7 +1325,7 @@ async function preloadMeta() {{
   }});
 
   try {{
-    const resp = await fetch("/viewer/list/meta/?" + params.toString());
+    const resp = await fetch(META_BASE + "?" + params.toString());
     if (!resp.ok) return;
 
     const data = await resp.json();
@@ -1221,7 +1352,7 @@ async function loadPsetKeys() {{
   }});
 
   try {{
-    const resp = await fetch("/viewer/list/meta/?" + params.toString());
+    const resp = await fetch(META_BASE + "?" + params.toString());
     const data = await resp.json();
 
     if (data.error) throw new Error(data.error);

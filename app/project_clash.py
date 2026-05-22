@@ -23,6 +23,13 @@ from app.document_storage import (
 from app.extractors import get_candidate_products, get_psets_safe
 from app.issue_storage import save_clash_issues
 from app.project_storage import get_or_create_project_session, get_project
+from app.project_ifc_cache import (
+    document_index_by_slot,
+    ensure_document_ifc_cache,
+    get_cached_ifc_path,
+    get_project_ifc_index,
+)
+from app.extractors import apply_filters, extract_element_data
 from app.storage import get_ifc_label, get_ifc_path, get_session_slots, session_exists
 
 project_clash_router = APIRouter()
@@ -64,17 +71,22 @@ def _fmt_size(num: int) -> str:
 
 def _load_documents_panel(account: dict, project_id: str, slots: list[int], saved: str = "", error: str = "") -> str:
     docs = list_project_ifc_documents(account["account_id"], project_id)
-    slot_hint = "Keine Modelle in den Clash-Cache geladen."
+    slot_hint = "Project IFC Index noch nicht aufgebaut."
     if slots:
-        slot_hint = "Aktuell geladene Clash-Modelle: " + ", ".join(
-            f"Slot {s}: {_e(get_ifc_label(get_or_create_project_session(account['account_id'], project_id), s))}" for s in slots
-        )
+        try:
+            pidx = get_project_ifc_index(account["account_id"], project_id)
+            slot_hint = "Project IFC Index: " + ", ".join(
+                f"{i+1}: {_e(d.get('original_filename', ''))}"
+                for i, d in enumerate(pidx.get("documents", []) or [])
+            )
+        except Exception:
+            slot_hint = "Project IFC Index konnte noch nicht gelesen werden."
 
     flash = ""
     if error:
         flash = f'<div class="flash-err" style="margin-bottom:10px">⚠ {_e(error)}</div>'
     elif saved:
-        flash = '<div class="flash-ok" style="margin-bottom:10px">✓ Modelle wurden aus Documents für die Clash-Analyse geladen.</div>'
+        flash = '<div class="flash-ok" style="margin-bottom:10px">✓ Project IFC Cache / Index wurde vorbereitet.</div>'
 
     if not docs:
         return f"""
@@ -82,7 +94,7 @@ def _load_documents_panel(account: dict, project_id: str, slots: list[int], save
         <div class="card" style="border-color:var(--accent2)">
           <h3 style="font-size:15px;margin-bottom:8px">Keine IFC-Dateien im Documents-Modul</h3>
           <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
-            Die Clash-Analyse liest keine Viewer-Uploads mehr. Lade zuerst .ifc oder .ifczip im Documents-Modul hoch.
+            Die Clash-Analyse liest ausschließlich aus Documents und dem Project IFC Cache.
           </p>
           <a class="btn btn-primary" href="/projects/{_e(project_id)}/documents" style="text-decoration:none">Zu Documents</a>
         </div>
@@ -104,7 +116,7 @@ def _load_documents_panel(account: dict, project_id: str, slots: list[int], save
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px">
         <div>
-          <h3 style="font-size:15px;margin-bottom:4px">IFC-Quelle: Documents</h3>
+          <h3 style="font-size:15px;margin-bottom:4px">IFC-Quelle: Documents → Project IFC Cache/Index</h3>
           <p style="color:var(--muted);font-size:12px">{slot_hint}</p>
         </div>
         <a class="btn" href="/projects/{_e(project_id)}/documents" style="text-decoration:none;font-size:12px">Documents öffnen</a>
@@ -116,18 +128,22 @@ def _load_documents_panel(account: dict, project_id: str, slots: list[int], save
             {rows}
           </table>
         </div>
-        <button class="btn btn-primary" type="submit" style="margin-top:12px">Ausgewählte Modelle für Clash laden</button>
+        <button class="btn btn-primary" type="submit" style="margin-top:12px">Project IFC Cache vorbereiten</button>
       </form>
     </div>
     """
-
 
 def _clash_page_html(project: dict, account: dict, session_id: str, saved: str = "", error: str = "") -> HTMLResponse:
     from app.projects import _page, _project_subnav, _topbar_global
 
     project_id = project["project_id"]
-    slots = get_session_slots(session_id) if session_exists(session_id) else []
-    labels = {s: get_ifc_label(session_id, s) for s in slots}
+    try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        project_docs = pidx.get("documents", []) or []
+    except Exception:
+        project_docs = []
+    slots = list(range(1, len(project_docs) + 1))
+    labels = {i + 1: d.get("original_filename", f"model_{i+1}.ifc") for i, d in enumerate(project_docs)}
     documents_panel = _load_documents_panel(account, project_id, slots, saved=saved, error=error)
 
     if not slots:
@@ -329,7 +345,8 @@ def project_clash_load(request: Request, project_id: str, document_ids: list[str
     if not project:
         return RedirectResponse("/", status_code=302)
     try:
-        prepare_viewer_session_from_project_documents(account["account_id"], project_id, document_ids, session_id=session_id)
+        for did in document_ids:
+            ensure_document_ifc_cache(account["account_id"], project_id, did)
         return RedirectResponse(f"/projects/{_e(project_id)}/clash?saved=load", status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/projects/{_e(project_id)}/clash?error={quote_plus(str(exc))}", status_code=303)
@@ -337,35 +354,29 @@ def project_clash_load(request: Request, project_id: str, document_ids: list[str
 
 @project_clash_router.get("/projects/{project_id}/clash/pset-keys")
 def project_clash_pset_keys(request: Request, project_id: str, slots: str = Query(default="")):
-    account, project, session_id = _load_context(request, project_id)
+    account, project, _session_id = _load_context(request, project_id)
     if not project:
         return JSONResponse({"error": "Projekt nicht gefunden."}, status_code=404)
-    if not session_exists(session_id):
-        return JSONResponse({"error": "Projekt-Session nicht gefunden."}, status_code=404)
-
     try:
-        selected_slots = [int(s) for s in slots.split(",") if s.strip()]
-    except ValueError:
-        selected_slots = get_session_slots(session_id)
-    if not selected_slots:
-        selected_slots = get_session_slots(session_id)
-
-    pset_keys: set[str] = set()
-    for slot in selected_slots:
-        path = get_ifc_path(session_id, slot)
-        if not os.path.exists(path):
-            continue
-        try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        selected_slots = [int(s) for s in slots.split(",") if s.strip()] if slots.strip() else list(range(1, len(pidx.get("documents", []) or []) + 1))
+        pset_keys: set[str] = set()
+        for slot in selected_slots:
+            didx = document_index_by_slot(pidx, slot)
+            path = didx.get("local_ifc_path")
+            if not path or not os.path.exists(path):
+                continue
             model = ifcopenshell.open(path)
             for elem in get_candidate_products(model):
                 psets = get_psets_safe(elem)
                 for pset_name, props in (psets or {}).items():
                     if isinstance(props, dict):
                         for prop_name in props:
-                            pset_keys.add(f"pset:{pset_name}.{prop_name}")
-        except Exception:
-            continue
-    return JSONResponse({"pset_keys": sorted(pset_keys)})
+                            if prop_name != "id":
+                                pset_keys.add(f"pset:{pset_name}.{prop_name}")
+        return JSONResponse({"pset_keys": sorted(pset_keys)})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @project_clash_router.post("/projects/{project_id}/clash/run")
@@ -373,9 +384,6 @@ async def project_clash_run(request: Request, project_id: str):
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return JSONResponse({"error": "Projekt nicht gefunden."}, status_code=404)
-    if not session_exists(session_id):
-        return JSONResponse({"error": "Projekt-Session nicht gefunden."}, status_code=404)
-
     try:
         body = await request.json()
         tolerance = float(body.get("tolerance", 0.0))
@@ -391,10 +399,10 @@ async def project_clash_run(request: Request, project_id: str):
         if not slots_b:
             return JSONResponse({"error": "Gruppe B: kein Modell ausgewählt."}, status_code=400)
 
-        from app.clash import compare_element_groups_for_clashes, get_group_elements
+        from app.clash import compare_element_groups_for_clashes
 
-        elements_a = get_group_elements(session_id, slots_a, filters_a)
-        elements_b = get_group_elements(session_id, slots_b, filters_b)
+        elements_a = _load_project_group_elements(account["account_id"], project_id, slots_a, filters_a)
+        elements_b = _load_project_group_elements(account["account_id"], project_id, slots_b, filters_b)
         clashes = compare_element_groups_for_clashes(elements_a, elements_b, tolerance=tolerance)
         return JSONResponse({"count_a": len(elements_a), "count_b": len(elements_b), "clashes": clashes})
     except Exception as exc:
@@ -428,20 +436,24 @@ def project_clash_detail(
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
-    if not session_exists(session_id):
-        return _page("Fehler", '<div style="padding:40px;color:var(--accent2)"><h2>Projekt-Session nicht gefunden</h2></div>')
+    try:
+        pidx = get_project_ifc_index(account["account_id"], project_id)
+        didx_a = document_index_by_slot(pidx, slot_a)
+        didx_b = document_index_by_slot(pidx, slot_b)
+    except Exception as exc:
+        return _page("Fehler", f'<div style="padding:40px;color:var(--accent2)"><h2>{_e(exc)}</h2></div>')
 
     sid = _e(session_id)
-    label_a = _e(get_ifc_label(session_id, slot_a))
-    label_b = _e(get_ifc_label(session_id, slot_b))
+    label_a = _e(didx_a.get("original_filename", f"model_{slot_a}.ifc"))
+    label_b = _e(didx_b.get("original_filename", f"model_{slot_b}.ifc"))
     col_a = _slot_color(slot_a)
     col_b = _slot_color(slot_b)
     if slot_a == slot_b:
-        model_urls_js = f'{{url:"/viewer/file/?session_id={sid}&slot={slot_a}",label:{json.dumps(label_a)},slot:{slot_a},color:{json.dumps(col_a)}}}'
+        model_urls_js = f'{{url:"/viewer/file/?project_id={_e(project_id)}&document_id={_e(didx_a.get("document_id", ""))}",label:{json.dumps(label_a)},slot:{slot_a},color:{json.dumps(col_a)}}}'
     else:
         model_urls_js = (
-            f'{{url:"/viewer/file/?session_id={sid}&slot={slot_a}",label:{json.dumps(label_a)},slot:{slot_a},color:{json.dumps(col_a)}}},'
-            f'{{url:"/viewer/file/?session_id={sid}&slot={slot_b}",label:{json.dumps(label_b)},slot:{slot_b},color:{json.dumps(col_b)}}}'
+            f'{{url:"/viewer/file/?project_id={_e(project_id)}&document_id={_e(didx_a.get("document_id", ""))}",label:{json.dumps(label_a)},slot:{slot_a},color:{json.dumps(col_a)}}},'
+            f'{{url:"/viewer/file/?project_id={_e(project_id)}&document_id={_e(didx_b.get("document_id", ""))}",label:{json.dumps(label_b)},slot:{slot_b},color:{json.dumps(col_b)}}}'
         )
     back_url = f"/projects/{_e(project_id)}/clash"
     body = f"""
