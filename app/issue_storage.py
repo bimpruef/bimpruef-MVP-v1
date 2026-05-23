@@ -1,0 +1,281 @@
+"""
+issue_storage.py – Projektbasiertes Issues-Modul für BIMPruef
+
+Issues sind die zentrale fachliche Sammelstelle für Clash-Ergebnisse und
+spätere Prüf-/Koordinationspunkte. BCF-Export gehört hierhin, nicht ins
+Clash-Modul.
+"""
+
+import json
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
+
+from app.db import SessionLocal, engine, init_db
+from app.exceptions import NotFoundError, ValidationError, ConflictError
+from app.models import Project, ProjectIssue
+
+init_db()
+
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _validate_safe_id(value: str, label: str) -> str:
+    value = str(value or "").strip()
+    if not SAFE_ID_RE.fullmatch(value):
+        raise ValidationError(f"Ungültige {label}.")
+    return value
+
+
+def _dt(value) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S")
+    return str(value or "")
+
+
+def _clean(value: str, max_len: int = 255) -> str:
+    return str(value or "").strip()[:max_len]
+
+
+def _project_for_account(db, account_id: str, project_id: str) -> Project:
+    account_id = _validate_safe_id(account_id, "Account-ID")
+    project_id = _validate_safe_id(project_id, "Projekt-ID")
+    project = (
+        db.query(Project)
+        .filter(Project.account_id == account_id, Project.project_id == project_id)
+        .first()
+    )
+    if not project:
+        raise NotFoundError("Projekt nicht gefunden.")
+    return project
+
+
+def _issue_to_dict(issue: ProjectIssue) -> dict:
+    payload = {}
+    if issue.payload_json:
+        try:
+            payload = json.loads(issue.payload_json)
+        except Exception:
+            payload = {}
+    return {
+        "issue_id": issue.issue_id,
+        "project_id": issue.project_id,
+        "source": issue.source,
+        "issue_type": issue.issue_type,
+        "title": issue.title,
+        "description": issue.description or "",
+        "status": issue.status or "open",
+        "priority": issue.priority or "normal",
+        "global_id_1": issue.global_id_1 or "",
+        "global_id_2": issue.global_id_2 or "",
+        "type_1": issue.type_1 or "",
+        "type_2": issue.type_2 or "",
+        "name_1": issue.name_1 or "",
+        "name_2": issue.name_2 or "",
+        "file_label_1": issue.file_label_1 or "",
+        "file_label_2": issue.file_label_2 or "",
+        "slot_1": int(issue.slot_1 or 0),
+        "slot_2": int(issue.slot_2 or 0),
+        "payload": payload,
+        "created_at": _dt(issue.created_at),
+        "updated_at": _dt(issue.updated_at),
+    }
+
+
+def ensure_issue_schema() -> None:
+    """Idempotente Migration für bereits bestehende PostgreSQL-Datenbanken."""
+    try:
+        init_db()
+        inspector = inspect(engine)
+        tables = set(inspector.get_table_names())
+        if "project_issues" not in tables:
+            return
+        existing = {c["name"] for c in inspector.get_columns("project_issues")}
+        cols = {
+            "source": "VARCHAR(60) NOT NULL DEFAULT 'manual'",
+            "issue_type": "VARCHAR(60) NOT NULL DEFAULT 'coordination'",
+            "description": "TEXT NOT NULL DEFAULT ''",
+            "status": "VARCHAR(40) NOT NULL DEFAULT 'open'",
+            "priority": "VARCHAR(40) NOT NULL DEFAULT 'normal'",
+            "global_id_1": "VARCHAR(80) NOT NULL DEFAULT ''",
+            "global_id_2": "VARCHAR(80) NOT NULL DEFAULT ''",
+            "type_1": "VARCHAR(120) NOT NULL DEFAULT ''",
+            "type_2": "VARCHAR(120) NOT NULL DEFAULT ''",
+            "name_1": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "name_2": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "file_label_1": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "file_label_2": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "slot_1": "INTEGER NOT NULL DEFAULT 0",
+            "slot_2": "INTEGER NOT NULL DEFAULT 0",
+            "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+            "updated_at": "TIMESTAMP WITH TIME ZONE",
+        }
+        with engine.begin() as conn:
+            for name, ddl in cols.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE project_issues ADD COLUMN {name} {ddl}"))
+    except Exception:
+        pass
+
+
+ensure_issue_schema()
+
+
+def list_project_issues(account_id: str, project_id: str) -> list[dict]:
+    with SessionLocal() as db:
+        _project_for_account(db, account_id, project_id)
+        issues = (
+            db.query(ProjectIssue)
+            .filter(ProjectIssue.project_id == project_id)
+            .order_by(ProjectIssue.created_at.desc())
+            .all()
+        )
+        return [_issue_to_dict(i) for i in issues]
+
+
+def count_project_issues(account_id: str, project_id: str) -> int:
+    with SessionLocal() as db:
+        _project_for_account(db, account_id, project_id)
+        return int(db.query(ProjectIssue).filter(ProjectIssue.project_id == project_id).count())
+
+
+def get_issue(account_id: str, project_id: str, issue_id: str) -> dict:
+    issue_id = _validate_safe_id(issue_id, "Issue-ID")
+    with SessionLocal() as db:
+        _project_for_account(db, account_id, project_id)
+        issue = (
+            db.query(ProjectIssue)
+            .filter(ProjectIssue.project_id == project_id, ProjectIssue.issue_id == issue_id)
+            .first()
+        )
+        if not issue:
+            raise NotFoundError("Issue nicht gefunden.")
+        return _issue_to_dict(issue)
+
+
+def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> list[dict]:
+    """Speichert ausgewählte Clash-Zeilen als Issues.
+
+    Deduplizierung: pro Projekt wird dieselbe GlobalId-Paarung aus derselben
+    Slot-Kombination nur einmal als offenes Clash-Issue angelegt.
+    """
+    if not clashes:
+        raise ValidationError("Bitte mindestens eine Clash-Zeile auswählen.")
+
+    now = _utcnow()
+    created: list[dict] = []
+
+    with SessionLocal() as db:
+        project = _project_for_account(db, account_id, project_id)
+
+        for idx, clash in enumerate(clashes, start=1):
+            gid1 = _clean(clash.get("global_id_1", ""), 80)
+            gid2 = _clean(clash.get("global_id_2", ""), 80)
+            slot1 = int(clash.get("slot_1") or 0)
+            slot2 = int(clash.get("slot_2") or 0)
+            if not gid1 or not gid2:
+                continue
+
+            duplicate = (
+                db.query(ProjectIssue)
+                .filter(
+                    ProjectIssue.project_id == project_id,
+                    ProjectIssue.issue_type == "clash",
+                    ProjectIssue.global_id_1 == gid1,
+                    ProjectIssue.global_id_2 == gid2,
+                    ProjectIssue.slot_1 == slot1,
+                    ProjectIssue.slot_2 == slot2,
+                )
+                .first()
+            )
+            if duplicate:
+                created.append(_issue_to_dict(duplicate))
+                continue
+
+            type1 = _clean(clash.get("type_1", ""), 120)
+            type2 = _clean(clash.get("type_2", ""), 120)
+            name1 = _clean(clash.get("name_1", ""), 255)
+            name2 = _clean(clash.get("name_2", ""), 255)
+            title = f"Clash: {type1 or 'Element A'} ↔ {type2 or 'Element B'}"
+            description = (
+                f"Aus Clash-Analyse gespeichert.\n\n"
+                f"Element A: {type1} | {name1} | {gid1}\n"
+                f"Element B: {type2} | {name2} | {gid2}"
+            )
+            issue = ProjectIssue(
+                issue_id=uuid.uuid4().hex,
+                project_id=project_id,
+                source="clash",
+                issue_type="clash",
+                title=title[:255],
+                description=description,
+                status="open",
+                priority="normal",
+                global_id_1=gid1,
+                global_id_2=gid2,
+                type_1=type1,
+                type_2=type2,
+                name_1=name1,
+                name_2=name2,
+                file_label_1=_clean(clash.get("file_label_1", ""), 255),
+                file_label_2=_clean(clash.get("file_label_2", ""), 255),
+                slot_1=slot1,
+                slot_2=slot2,
+                payload_json=json.dumps(clash, ensure_ascii=False, default=str),
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(issue)
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                raise ConflictError("Issue konnte wegen eines Datenkonflikts nicht gespeichert werden.")
+            created.append(_issue_to_dict(issue))
+
+        project.updated_at = now
+        db.commit()
+
+    return created
+
+
+def delete_issue(account_id: str, project_id: str, issue_id: str) -> None:
+    issue_id = _validate_safe_id(issue_id, "Issue-ID")
+    with SessionLocal() as db:
+        _project_for_account(db, account_id, project_id)
+        issue = (
+            db.query(ProjectIssue)
+            .filter(ProjectIssue.project_id == project_id, ProjectIssue.issue_id == issue_id)
+            .first()
+        )
+        if not issue:
+            raise NotFoundError("Issue nicht gefunden.")
+        db.delete(issue)
+        db.commit()
+
+
+def issue_to_bcf_clash(issue: dict) -> dict:
+    """Konvertiert ein Issue-Dict in das Clash-Dict-Format des BCF-Exports."""
+    payload = issue.get("payload") or {}
+    if isinstance(payload, dict) and payload.get("global_id_1") and payload.get("global_id_2"):
+        return payload
+    return {
+        "global_id_1": issue.get("global_id_1", ""),
+        "global_id_2": issue.get("global_id_2", ""),
+        "type_1": issue.get("type_1", ""),
+        "type_2": issue.get("type_2", ""),
+        "name_1": issue.get("name_1", ""),
+        "name_2": issue.get("name_2", ""),
+        "file_label_1": issue.get("file_label_1", ""),
+        "file_label_2": issue.get("file_label_2", ""),
+        "slot_1": issue.get("slot_1", 0),
+        "slot_2": issue.get("slot_2", 0),
+    }
