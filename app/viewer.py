@@ -496,8 +496,8 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
             f'style="accent-color:{col};width:13px;height:13px;flex-shrink:0">'
             f'<span class="bp-viewer-model-dot" style="border-color:{col}"></span>'
             f'<span class="bp-viewer-model-name" title="{lbl}">{lbl}</span>'
-            f'<form method="post" action="/viewer/remove/" style="display:inline;margin:0" '
-            f'onsubmit="return confirm(\'Datei \\'{escaped_lbl}\\' wirklich schließen?\')">'
+            '<form method="post" action="/viewer/remove/" style="display:inline;margin:0" '
+            f"onsubmit=\"return confirm('Datei {escaped_lbl} wirklich schließen?')\">"
             f'<input type="hidden" name="session_id" value="{sid}">'
             f'<input type="hidden" name="project_id" value="{_e(project_id)}">'
             f'<input type="hidden" name="slot" value="{s}">'
