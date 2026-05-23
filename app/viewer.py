@@ -24,6 +24,8 @@ import urllib.parse
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from app.templates import build_page
+
 from app.storage import (
     ALLOWED_EXTENSIONS,
     MAX_FILES_PER_SESSION,
@@ -45,71 +47,13 @@ MAX_FILE_SIZE_MB    = 500
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Gemeinsame CSS-Basis
-# ─────────────────────────────────────────────────────────────────────────────
-DARK_STYLES = """\
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e0e1a;--surface:#16213e;--surface2:#1a2a4a;
-  --border:#1e3a6e;--accent:#4fc3f7;--accent2:#e94560;
-  --text:#d0dce8;--muted:#4a6080;--success:#4caf50;
-}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);
-  color:var(--text);min-height:100vh;line-height:1.5}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-button,.btn{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);
-  color:var(--text);border-radius:6px;cursor:pointer;font-size:13px;
-  transition:background .15s,border-color .15s}
-button:hover,.btn:hover{background:#223a5e;border-color:var(--accent)}
-.btn-primary{background:var(--accent);color:#0a1a2e;border-color:var(--accent);font-weight:600}
-.btn-primary:hover{background:#81d4fa}
-.btn-danger{background:#7a1a2e;border-color:var(--accent2);color:#ffb3b3}
-.btn-danger:hover{background:#a02040}
-.card{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:18px;margin-bottom:16px}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-.tag-1{background:#0d2a3e;color:#4fc3f7;border:1px solid #1a4a6e}
-.tag-2{background:#3e0d1a;color:#ef9a9a;border:1px solid #6e1a2e}
-table{border-collapse:collapse;width:100%}
-th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;font-size:12px}
-th{background:var(--surface2);color:#8ab;font-weight:600;position:sticky;top:0;z-index:1}
-tr:hover td{background:rgba(79,195,247,.04)}
-.flash-err{background:#2a0a10;border:1px solid var(--accent2);border-radius:8px;
-  padding:10px 14px;color:#ffaaaa;font-size:13px;margin-bottom:14px}
-.flash-ok{background:#0a2a10;border:1px solid var(--success);border-radius:8px;
-  padding:10px 14px;color:#aaffaa;font-size:13px;margin-bottom:14px}
-footer{text-align:center;padding:24px 0 12px;border-top:1px solid var(--border);
-  color:var(--muted);font-size:12px;margin-top:40px}
-.model-card{padding:5px 10px;border-bottom:1px solid var(--border)}
-.cat-item{display:flex;align-items:center;gap:6px;padding:3px 10px;cursor:pointer;
-  user-select:none;border-bottom:1px solid #1a2540}
-.cat-item:hover{background:#1e2f50}
-@keyframes spin{to{transform:rotate(360deg)}}
-</style>"""
-
-
-def _page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title>
-{DARK_STYLES}
-<link rel="stylesheet" href="/static/bimpruef.css">
-</head>
-<body>
-{body}
-<footer>
-  <p>BIMPruef Platform by Foad Amini &nbsp;·&nbsp;
-  <a href="/impressum">Impressum</a> &nbsp;·&nbsp;
-  <a href="/datenschutz">Datenschutz</a></p>
-</footer>
-</body>
-</html>""")
+def _page(title: str, body: str, *, active_nav: str = "projects", container: bool = False) -> HTMLResponse:
+    return build_page(
+        title=title,
+        body_html=body,
+        active_nav=active_nav,
+        container=container,
+    )
 
 
 def _e(s) -> str:
