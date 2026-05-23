@@ -24,6 +24,7 @@ import urllib.parse
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from app.templates import build_page as _tmpl_build_page, render_error as _tmpl_render_error
 from app.storage import (
     ALLOWED_EXTENSIONS,
     MAX_FILES_PER_SESSION,
@@ -46,106 +47,39 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gemeinsame CSS-Basis
+# Viewer-Seitengerüst  (Vollbild-Modus, kein Standard-Nav/Footer)
 # ─────────────────────────────────────────────────────────────────────────────
-DARK_STYLES = """\
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e0e1a;--surface:#16213e;--surface2:#1a2a4a;
-  --border:#1e3a6e;--accent:#4fc3f7;--accent2:#e94560;
-  --text:#d0dce8;--muted:#4a6080;--success:#4caf50;
-}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);
-  color:var(--text);min-height:100vh;line-height:1.5}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-button,.btn{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);
-  color:var(--text);border-radius:6px;cursor:pointer;font-size:13px;
-  transition:background .15s,border-color .15s}
-button:hover,.btn:hover{background:#223a5e;border-color:var(--accent)}
-.btn-primary{background:var(--accent);color:#0a1a2e;border-color:var(--accent);font-weight:600}
-.btn-primary:hover{background:#81d4fa}
-.btn-danger{background:#7a1a2e;border-color:var(--accent2);color:#ffb3b3}
-.btn-danger:hover{background:#a02040}
-.card{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:18px;margin-bottom:16px}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-.tag-1{background:#0d2a3e;color:#4fc3f7;border:1px solid #1a4a6e}
-.tag-2{background:#3e0d1a;color:#ef9a9a;border:1px solid #6e1a2e}
-table{border-collapse:collapse;width:100%}
-th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;font-size:12px}
-th{background:var(--surface2);color:#8ab;font-weight:600;position:sticky;top:0;z-index:1}
-tr:hover td{background:rgba(79,195,247,.04)}
-.flash-err{background:#2a0a10;border:1px solid var(--accent2);border-radius:8px;
-  padding:10px 14px;color:#ffaaaa;font-size:13px;margin-bottom:14px}
-.flash-ok{background:#0a2a10;border:1px solid var(--success);border-radius:8px;
-  padding:10px 14px;color:#aaffaa;font-size:13px;margin-bottom:14px}
-footer{text-align:center;padding:24px 0 12px;border-top:1px solid var(--border);
-  color:var(--muted);font-size:12px;margin-top:40px}
-.model-card{padding:5px 10px;border-bottom:1px solid var(--border)}
-.cat-item{display:flex;align-items:center;gap:6px;padding:3px 10px;cursor:pointer;
-  user-select:none;border-bottom:1px solid #1a2540}
-.cat-item:hover{background:#1e2f50}
-@keyframes spin{to{transform:rotate(360deg)}}
-</style>"""
 
+def _viewer_page(title: str, body: str) -> HTMLResponse:
+    """
+    Minimales HTML-Gerüst für den Vollbild-3D-Viewer.
+    Lädt bimpruef.css und Inter-Schrift; verzichtet auf den Standard-
+    bp-nav/Footer da der Viewer sein eigenes kompaktes Topbar-Layout hat.
+    """
+    safe = html.escape(title)
+    return HTMLResponse(
+        f"<!DOCTYPE html>"
+        f'<html lang="de">'
+        f"<head>"
+        f'<meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{safe} – BIMPruef</title>"
+        f'<link rel="preconnect" href="https://fonts.googleapis.com">'
+        f'<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        f'<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700'
+        f'&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">'
+        f'<link rel="stylesheet" href="/static/bimpruef.css">'
+        f"</head>"
+        f'<body class="bp-viewer-body">'
+        f"{body}"
+        f"</body>"
+        f"</html>"
+    )
 
-def _page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title>
-{DARK_STYLES}
-<link rel="stylesheet" href="/static/bimpruef.css">
-</head>
-<body>
-{body}
-<footer>
-  <p>BIMPruef Platform by Foad Amini &nbsp;·&nbsp;
-  <a href="/impressum">Impressum</a> &nbsp;·&nbsp;
-  <a href="/datenschutz">Datenschutz</a></p>
-</footer>
-</body>
-</html>""")
 
 
 def _e(s) -> str:
     return html.escape(str(s or ""))
-
-def _brand_logo(height_px: int = 28) -> str:
-    """Brand-Element (Icon + Text) im Stil des gewünschten BIMPRUEF-Logos."""
-    icon_size = max(27, int(height_px * 1.28))
-    text_size = max(18, int(height_px * 0.92))
-    return f"""<div style="display:flex;align-items:center;gap:8px;margin-right:12px;line-height:1">
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 54" role="img" aria-label="BIMpruef icon" style="height:{icon_size}px;width:auto;display:block">
-    <g fill="none" stroke-linejoin="round" stroke-linecap="round" stroke-width="2.8">
-      <g stroke="#1f5f9f">
-        <path d="M8 18 24 8l16 10-16 10z"/>
-        <path d="M8 18v18l16 10V28z"/>
-        <path d="M40 18v18L24 46V28z"/>
-      </g>
-      <g stroke="#d8192f">
-        <path d="M29 18 45 8l16 10-16 10z"/>
-        <path d="M29 18v18l16 10V28z"/>
-        <path d="M61 18v18L45 46V28z"/>
-      </g>
-      <g stroke="#8f4399">
-        <path d="M50 18 66 8l16 10-16 10z"/>
-        <path d="M50 18v18l16 10V28z"/>
-        <path d="M82 18v18L66 46V28z"/>
-      </g>
-      <g stroke="#27a6ad">
-        <path d="M71 18 87 8l16 10-16 10z"/>
-        <path d="M71 18v18l16 10V28z"/>
-        <path d="M103 18v18L87 46V28z"/>
-      </g>
-    </g>
-  </svg>
-  <span style="font-family:'Avenir Next','Montserrat','Segoe UI',sans-serif;font-weight:300;letter-spacing:1.2px;color:var(--text);font-size:{text_size}px;white-space:nowrap;text-transform:uppercase">BIMPRUEF</span>
-</div>"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,36 +118,31 @@ def _viewer_url(session_id: str, area: str = "viewer", project_id: str = "", ext
     return base
 
 
-def _topbar(session_id: str, active: str = "", clash_params: str = "", project_id: str = "") -> str:
+def _viewer_topbar(session_id: str, active: str = "", project_id: str = "") -> str:
+    """Kompakter Viewer-Topbar im bp-nav-Stil (dunkel, einzeilig)."""
     sid = _e(session_id)
     project_back = (
-        f'<a href="{_project_url(project_id, "dashboard")}" style="padding:8px 12px;font-size:12px;color:var(--muted);text-decoration:none">← Projekt</a>'
+        f'<a href="{_project_url(project_id, "dashboard")}" class="bp-viewer-nav__back">'
+        f"← Projekt</a>"
         if project_id else ""
     )
-    # Liste ist jetzt ein eigenständiges Projektmodul und erscheint nicht mehr
-    # in der Viewer-internen Navigation.
     nav = [
-        ("viewer", _viewer_url(session_id, "viewer", project_id), "🏗 Model"),
+        ("viewer", _viewer_url(session_id, "viewer", project_id), "🏗 Modell"),
     ]
-    items = project_back
+    links = project_back
     for key, href, label in nav:
-        style = (
-            "padding:8px 14px;font-size:13px;border-radius:6px;"
-            "color:var(--accent);border-bottom:2px solid var(--accent);text-decoration:none"
-            if active == key else
-            "padding:8px 14px;font-size:13px;border-radius:6px;"
-            "color:var(--text);text-decoration:none"
-        )
-        items += f'<a href="{href}" style="{style}">{label}</a>'
+        cls = "bp-viewer-nav__link bp-viewer-nav__link--active" if active == key else "bp-viewer-nav__link"
+        links += f'<a href="{href}" class="{cls}">{label}</a>'
     context_label = f"Projekt: {_e(project_id)[:8]}…" if project_id else f"Session: {sid[:8]}…"
     return (
-        f'<div style="display:flex;align-items:center;gap:4px;padding:6px 16px;'
-        f'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
-        f'{_brand_logo(24)}'
-        f'{items}'
-        f'<span style="margin-left:auto;font-size:11px;color:var(--muted)">{context_label}</span>'
-        f'</div>'
+        f'<div class="bp-viewer-topbar">'
+        f'<a href="/" class="bp-viewer-nav__logo">'
+        f'<div class="bp-nav__logo-mark">BP</div>BIMPruef</a>'
+        f"{links}"
+        f'<span class="bp-viewer-nav__ctx">{context_label}</span>'
+        f"</div>"
     )
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -594,18 +523,16 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
         empty_hint = ""
     elif project_id:
         empty_hint = f"""
-<div class="flash-ok" style="margin:8px 16px 0">
+<div class="bp-viewer-notice bp-viewer-notice--info">
   Keine IFC-Modelle im Viewer-Cache geladen. Lade Modelle aus Documents.
-  <a class="btn btn-primary" href="/projects/{_e(project_id)}/model?mode=select" style="margin-left:10px;text-decoration:none;font-size:11px;padding:3px 10px">Modelle auswählen</a>
-  <a class="btn" href="/projects/{_e(project_id)}/documents" style="margin-left:6px;text-decoration:none;font-size:11px;padding:3px 10px">Zu Documents</a>
+  <a class="bp-btn bp-btn--primary bp-btn--sm" href="/projects/{_e(project_id)}/model?mode=select">Modelle auswählen</a>
+  <a class="bp-btn bp-btn--secondary bp-btn--sm" href="/projects/{_e(project_id)}/documents">Zu Documents</a>
 </div>"""
     else:
         empty_hint = """
-<div class="flash-ok" style="margin:8px 16px 0">
-  Keine Modelle geladen.
-</div>"""
+<div class="bp-viewer-notice bp-viewer-notice--info">Keine Modelle geladen.</div>"""
 
-    error_html = f'<div class="flash-err" style="margin:8px 16px 0">⚠ {_e(error)}</div>' if error else ""
+    error_html = f'<div class="bp-viewer-notice bp-viewer-notice--danger">⚠ {_e(error)}</div>' if error else ""
 
     # Modell-Karten Sidebar
     model_cards = ""
@@ -614,22 +541,18 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
         lbl = labels[s]
         escaped_lbl = lbl.replace("'", "\\'").replace("\\", "\\\\")
         model_cards += f"""
-<div class="model-card">
-  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+<div class="bp-viewer-model-card">
+  <label class="bp-viewer-model-label">
     <input type="checkbox" class="chk-model" data-slot="{s}" checked
       style="accent-color:{col};width:13px;height:13px;flex-shrink:0">
-    <span style="width:10px;height:10px;border-radius:50%;border:2px solid {col};
-      flex-shrink:0;display:inline-block"></span>
-    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-      title="{lbl}">{lbl}</span>
-    <form method="post" action="/viewer/remove/" style="display:inline;margin:0"
-      onsubmit="return confirm('Datei \\'{escaped_lbl}\\' wirklich schließen?')">
+    <span class="bp-viewer-model-dot" style="border-color:{col}"></span>
+    <span class="bp-viewer-model-name" title="{lbl}">{lbl}</span>
+    <form method="post" action="/viewer/remove/" class="bp-viewer-remove-form"
+      onsubmit="return confirm('Datei \\'{escaped_lbl}\\'  wirklich schließen?')">
       <input type="hidden" name="session_id" value="{sid}">
       <input type="hidden" name="project_id" value="{_e(project_id)}">
       <input type="hidden" name="slot" value="{s}">
-      <button type="submit" title="Entfernen"
-        style="padding:1px 6px;font-size:10px;background:#2a0d14;
-        border:1px solid #6e1a2e;color:#ff8080;border-radius:3px;cursor:pointer">✕</button>
+      <button type="submit" title="Entfernen" class="bp-viewer-remove-btn">✕</button>
     </form>
   </label>
 </div>"""
@@ -638,18 +561,14 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     # dauerhafte Quelle; diese Sidebar zeigt nur die geladenen Viewer-Cache-Slots.
     if project_id:
         upload_html = f"""
-<div style="padding:8px 10px;border-bottom:1px solid var(--border)">
-  <a class="btn btn-primary" href="/projects/{_e(project_id)}/model?mode=select"
-    style="display:block;text-align:center;text-decoration:none;font-size:11px;padding:4px 8px;margin-bottom:6px">
+<div class="bp-viewer-upload-area">
+  <a class="bp-btn bp-btn--primary bp-btn--sm bp-w-full" href="/projects/{_e(project_id)}/model?mode=select">
     Modelle aus Documents laden
   </a>
-  <a class="btn" href="/projects/{_e(project_id)}/documents"
-    style="display:block;text-align:center;text-decoration:none;font-size:11px;padding:4px 8px">
+  <a class="bp-btn bp-btn--secondary bp-btn--sm bp-w-full" href="/projects/{_e(project_id)}/documents">
     Zu Documents
   </a>
-  <div style="font-size:10px;color:var(--muted);margin-top:6px">
-    Uploads erfolgen ausschließlich im Documents-Modul.
-  </div>
+  <p class="bp-viewer-upload-hint">Uploads erfolgen ausschließlich im Documents-Modul.</p>
 </div>"""
     else:
         upload_html = ""
@@ -657,106 +576,74 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     load_txt = "IFC-Dateien werden geladen …" if slots else "Keine Modelle aus Documents geladen."
 
     body = f"""
-<div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
+<div class="bp-viewer-shell">
 
-  {_topbar(session_id, "viewer", project_id=project_id)}
+  {_viewer_topbar(session_id, "viewer", project_id=project_id)}
   {error_html}{empty_hint}
 
-  <div style="display:flex;flex:1;overflow:hidden">
+  <div class="bp-viewer-body-row">
 
     <!-- Sidebar -->
-    <div style="width:220px;min-width:220px;background:var(--surface);
-      border-right:1px solid var(--border);display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0">
+    <div class="bp-viewer-sidebar">
 
-      <div style="padding:5px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;justify-content:space-between">
+      <div class="bp-viewer-panel-head">
         <span>Modelle</span>
       </div>
       {upload_html}
       {model_cards}
 
-      <div style="padding:5px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;justify-content:space-between;margin-top:2px">
+      <div class="bp-viewer-panel-head" style="margin-top:2px">
         <span>IFC-Struktur</span>
         <span>
-          <button id="btn-cat-all"  style="font-size:10px;cursor:pointer;color:#6af;
-            background:none;border:none;padding:0">Alle</button>&nbsp;
-          <button id="btn-cat-none" style="font-size:10px;cursor:pointer;color:#6af;
-            background:none;border:none;padding:0">Keine</button>
+          <button id="btn-cat-all"  class="bp-viewer-cat-btn">Alle</button>
+          <button id="btn-cat-none" class="bp-viewer-cat-btn">Keine</button>
         </span>
       </div>
-      <div id="cat-scroll" style="flex:1;overflow-y:auto;padding:2px 0">
-        <div style="padding:8px 10px;font-size:11px;color:var(--muted);font-style:italic">
-          {load_txt}
-        </div>
+      <div id="cat-scroll" class="bp-viewer-cat-scroll">
+        <p class="bp-viewer-load-hint">{load_txt}</p>
       </div>
     </div>
 
     <!-- Canvas -->
-    <div id="canvas-wrap" style="flex:1;position:relative;overflow:hidden">
-      <canvas id="three-canvas"
-        style="width:100%!important;height:100%!important;display:block"></canvas>
+    <div id="canvas-wrap" class="bp-viewer-canvas-wrap">
+      <canvas id="three-canvas" class="bp-viewer-canvas"></canvas>
 
       <!-- GlobalId-Suchfeld -->
-      <div id="search-bar" style="position:absolute;top:8px;left:8px;z-index:10;width:320px">
-        <div style="display:flex;gap:4px;align-items:center">
+      <div id="search-bar" class="bp-viewer-search">
+        <div class="bp-viewer-search-row">
           <input id="gid-search" type="text" placeholder="🔍 GlobalId suchen …"
-            style="flex:1;background:rgba(14,20,36,.92);border:1px solid var(--border);
-            color:var(--text);padding:5px 10px;border-radius:6px;font-size:12px;
-            outline:none;backdrop-filter:blur(4px)"
+            class="bp-viewer-search-input"
             autocomplete="off" spellcheck="false">
-          <button id="search-clear" style="display:none;background:rgba(14,20,36,.92);
-            border:1px solid var(--border);color:var(--muted);border-radius:6px;
-            padding:5px 8px;font-size:12px;cursor:pointer" title="Suche leeren">✕</button>
+          <button id="search-clear" class="bp-viewer-search-clear" style="display:none" title="Suche leeren">✕</button>
         </div>
-        <div id="search-results" style="display:none;margin-top:4px;
-          background:rgba(14,20,36,.97);border:1px solid var(--border);
-          border-radius:6px;max-height:260px;overflow-y:auto;
-          backdrop-filter:blur(4px)"></div>
+        <div id="search-results" class="bp-viewer-search-results" style="display:none"></div>
       </div>
 
       <!-- Overlay-Buttons -->
-      <div style="position:absolute;top:8px;right:8px;display:flex;gap:4px;z-index:6">
-        <button id="btn-fit"   class="btn" style="font-size:11px;padding:4px 9px">⊡ Einpassen</button>
-        <button id="btn-reset" class="btn" style="font-size:11px;padding:4px 9px">⟳ Kamera</button>
-        <button id="btn-show-all" class="btn btn-danger"
-          style="font-size:11px;padding:4px 9px;display:none">👁 Alle einblenden</button>
-        <span id="hidden-count"
-          style="font-size:11px;color:var(--accent2);display:none;align-self:center"></span>
+      <div class="bp-viewer-overlay-btns">
+        <button id="btn-fit"   class="bp-viewer-overlay-btn">⊡ Einpassen</button>
+        <button id="btn-reset" class="bp-viewer-overlay-btn">⟳ Kamera</button>
+        <button id="btn-show-all" class="bp-viewer-overlay-btn bp-viewer-overlay-btn--danger"
+          style="display:none">👁 Alle einblenden</button>
+        <span id="hidden-count" class="bp-viewer-hidden-count" style="display:none"></span>
       </div>
-      <div style="position:absolute;bottom:8px;right:8px;font-size:10px;
-        color:#445;pointer-events:none">
-        LMB Drehen · MMB Pan · Rad Zoom · Leertaste: ausblenden
-      </div>
+      <p class="bp-viewer-hint">LMB Drehen · MMB Pan · Rad Zoom · Leertaste: ausblenden</p>
 
       <!-- Lade-Overlay -->
-      <div id="loading" style="position:absolute;inset:0;display:flex;flex-direction:column;
-        align-items:center;justify-content:center;background:rgba(14,14,26,.93);z-index:20">
-        <div style="width:40px;height:40px;border:4px solid #0f3460;
-          border-top-color:var(--accent2);border-radius:50%;
-          animation:spin .7s linear infinite;margin-bottom:12px"></div>
-        <p id="load-txt" style="color:#889;font-size:13px">{load_txt}</p>
+      <div id="loading" class="bp-viewer-loading">
+        <div class="bp-viewer-spinner"></div>
+        <p id="load-txt" class="bp-viewer-load-txt">{load_txt}</p>
       </div>
     </div>
 
     <!-- Info-Panel -->
-    <div id="info-panel" style="width:300px;min-width:300px;background:var(--surface);
-      border-left:1px solid var(--border);display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0">
-      <div style="padding:6px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+    <div id="info-panel" class="bp-viewer-info-panel">
+      <div class="bp-viewer-panel-head">
         <span>Element-Info</span>
-        <span id="info-close" style="cursor:pointer;color:var(--muted);font-size:14px"
-          title="Schließen">✕</span>
+        <span id="info-close" class="bp-viewer-info-close" title="Schließen">✕</span>
       </div>
-      <div id="info-body" style="flex:1;overflow-y:auto;padding:10px;font-size:12px">
-        <div style="color:var(--muted);font-style:italic">
-          Klick auf ein Element für Details.
-        </div>
+      <div id="info-body" class="bp-viewer-info-body">
+        <p class="bp-viewer-load-hint">Klick auf ein Element für Details.</p>
       </div>
     </div>
 
@@ -819,7 +706,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 }})();
 </script>"""
 
-    return _page("BIMPruef 3D-Viewer", body)
+    return _viewer_page("BIMPruef 3D-Viewer", body)
 
 
 
@@ -2144,16 +2031,12 @@ def viewer_clash_legacy_redirect(
     """Legacy route: Clash UI moved to the project-level Clash module."""
     if project_id:
         return RedirectResponse(f"/projects/{_e(project_id)}/clash", status_code=302)
-    return _page(
+    return _tmpl_render_error(
         "Clash-Analyse verschoben",
-        '<div style="padding:40px;max-width:760px">'
-        '<h2 style="font-size:20px;margin-bottom:10px">Clash-Analyse ist jetzt ein Projektmodul</h2>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">'
-        'Die Clash-Analyse wird nicht mehr im Viewer gestartet. Öffne ein Projekt und nutze dort den Reiter Clash. '
-        'IFC-Dateien werden aus Documents geladen; BCF-Export erfolgt im Issues-Modul.'
-        '</p>'
-        '<a class="btn btn-primary" href="/" style="text-decoration:none">Zu den Projekten</a>'
-        '</div>'
+        "Die Clash-Analyse ist jetzt ein Projektmodul. Öffne ein Projekt und nutze dort den "
+        "Reiter Clash. IFC-Dateien werden aus Documents geladen; BCF-Export im Issues-Modul.",
+        back_url="/",
+        back_label="Zu den Projekten",
     )
 
 
@@ -2187,13 +2070,11 @@ def viewer_clash_detail_legacy_redirect(
             f"&gid1={urllib.parse.quote(gid1)}&gid2={urllib.parse.quote(gid2)}",
             status_code=302,
         )
-    return _page(
+    return _tmpl_render_error(
         "Clash-Detail verschoben",
-        '<div style="padding:40px;max-width:760px">'
-        '<h2 style="font-size:20px;margin-bottom:10px">Clash-Detail gehört jetzt zum Projektmodul</h2>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">Öffne die Clash-Liste innerhalb eines Projekts.</p>'
-        '<a class="btn btn-primary" href="/" style="text-decoration:none">Zu den Projekten</a>'
-        '</div>'
+        "Das Clash-Detail gehört jetzt zum Projektmodul. Öffne die Clash-Liste innerhalb eines Projekts.",
+        back_url="/",
+        back_label="Zu den Projekten",
     )
 
 
