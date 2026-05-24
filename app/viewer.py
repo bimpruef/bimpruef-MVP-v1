@@ -1,5 +1,17 @@
 """
 viewer.py  –  BIMPruef 3D-Viewer
+
+Routen:
+  GET  /viewer/                    → Viewer-Hauptseite (3D, ohne sichtbaren Upload im Model-Modul)
+  POST /viewer/upload/             → Legacy-Upload-Route (nicht mehr im Model-UI verlinkt)
+  POST /viewer/remove/             → Einzelne Datei aus Session entfernen
+  GET  /viewer/file/               → Rohe IFC-Datei ausliefern (immer .ifc)
+  GET  /viewer/clash/              → Clash-Analyse (zwei Modelle wählen)
+  GET  /viewer/clash/detail/       → Clash-Detail: nur Clash-Elemente hervorgehoben
+  GET  /viewer/clash/bcf/          → Alle Clashes als BCF-ZIP
+  GET  /viewer/clash/bcf-single/   → Einzelnen Clash als BCF-ZIP
+  POST /viewer/element/update/     → Element-Eigenschaften (Name, Typ, PSet) aktualisieren
+  GET  /viewer/export-ifc/         → Modifizierte IFC-Datei herunterladen
 """
 
 
@@ -33,7 +45,7 @@ router = APIRouter()
 
 MAX_FILE_SIZE_MB    = 500
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "1500"))
+BCF_CLASH_LIMIT     = int(os.environ.get("BCF_CLASH_LIMIT", "500"))
 
 def _page(title: str, body: str, *, active_nav: str = "projects", container: bool = False) -> HTMLResponse:
     return build_page(
@@ -46,6 +58,38 @@ def _page(title: str, body: str, *, active_nav: str = "projects", container: boo
 
 def _e(s) -> str:
     return html.escape(str(s or ""))
+
+def _brand_logo(height_px: int = 28) -> str:
+    """Brand-Element (Icon + Text) im Stil des gewünschten BIMPRUEF-Logos."""
+    icon_size = max(27, int(height_px * 1.28))
+    text_size = max(18, int(height_px * 0.92))
+    return f"""<div style="display:flex;align-items:center;gap:8px;margin-right:12px;line-height:1">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 54" role="img" aria-label="BIMpruef icon" style="height:{icon_size}px;width:auto;display:block">
+    <g fill="none" stroke-linejoin="round" stroke-linecap="round" stroke-width="2.8">
+      <g stroke="#1f5f9f">
+        <path d="M8 18 24 8l16 10-16 10z"/>
+        <path d="M8 18v18l16 10V28z"/>
+        <path d="M40 18v18L24 46V28z"/>
+      </g>
+      <g stroke="#d8192f">
+        <path d="M29 18 45 8l16 10-16 10z"/>
+        <path d="M29 18v18l16 10V28z"/>
+        <path d="M61 18v18L45 46V28z"/>
+      </g>
+      <g stroke="#8f4399">
+        <path d="M50 18 66 8l16 10-16 10z"/>
+        <path d="M50 18v18l16 10V28z"/>
+        <path d="M82 18v18L66 46V28z"/>
+      </g>
+      <g stroke="#27a6ad">
+        <path d="M71 18 87 8l16 10-16 10z"/>
+        <path d="M71 18v18l16 10V28z"/>
+        <path d="M103 18v18L87 46V28z"/>
+      </g>
+    </g>
+  </svg>
+  <span style="font-family:'Avenir Next','Montserrat','Segoe UI',sans-serif;font-weight:300;letter-spacing:1.2px;color:var(--text);font-size:{text_size}px;white-space:nowrap;text-transform:uppercase">BIMPRUEF</span>
+</div>"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,8 +128,40 @@ def _viewer_url(session_id: str, area: str = "viewer", project_id: str = "", ext
     return base
 
 
+def _topbar(session_id: str, active: str = "", clash_params: str = "", project_id: str = "") -> str:
+    sid = _e(session_id)
+    project_back = (
+        f'<a href="{_project_url(project_id, "dashboard")}" style="padding:8px 12px;font-size:12px;color:var(--muted);text-decoration:none">← Projekt</a>'
+        if project_id else ""
+    )
+    # Liste ist jetzt ein eigenständiges Projektmodul und erscheint nicht mehr
+    # in der Viewer-internen Navigation.
+    nav = [
+        ("viewer", _viewer_url(session_id, "viewer", project_id), "🏗 Model"),
+    ]
+    items = project_back
+    for key, href, label in nav:
+        style = (
+            "padding:8px 14px;font-size:13px;border-radius:6px;"
+            "color:var(--accent);border-bottom:2px solid var(--accent);text-decoration:none"
+            if active == key else
+            "padding:8px 14px;font-size:13px;border-radius:6px;"
+            "color:var(--text);text-decoration:none"
+        )
+        items += f'<a href="{href}" style="{style}">{label}</a>'
+    context_label = f"Projekt: {_e(project_id)[:8]}…" if project_id else f"Session: {sid[:8]}…"
+    return (
+        f'<div style="display:flex;align-items:center;gap:4px;padding:6px 16px;'
+        f'background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">'
+        f'{_brand_logo(24)}'
+        f'{items}'
+        f'<span style="margin-left:auto;font-size:11px;color:var(--muted)">{context_label}</span>'
+        f'</div>'
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Slot-Farbpalette  (اصلاح شد: رنگ‌های ملایم به جای رنگ‌های خالص)
+# Slot-Farbpalette
 # ─────────────────────────────────────────────────────────────────────────────
 SLOT_COLORS = [
     "#4fc3f7", "#ef9a9a", "#a5d6a7", "#ffcc80",
@@ -178,6 +254,8 @@ async def viewer_upload(
         sep = "&" if "?" in target_url else "?"
         target_url = f"{target_url}{sep}error={urllib.parse.quote('; '.join(errors))}"
     response = RedirectResponse(url=target_url, status_code=303)
+    # Kein bimpruef_session-Cookie mehr setzen – die Session-ID wird
+    # ausschließlich im sessionStorage des Browsers verwaltet.
     return response
 
 
@@ -202,6 +280,24 @@ async def viewer_element_update(request: Request):
     Aktualisiert Eigenschaften eines IFC-Elements (Name, ObjectType, Description,
     Tag, PredefinedType und beliebige Property Sets) und speichert die
     geänderte Datei zurück in den Session-Slot.
+
+    Request-Body (JSON):
+    {
+      "session_id": "...",
+      "slot": 1,
+      "express_id": 42,
+      "changes": {
+        "Name": "Neuer Name",
+        "ObjectType": "...",
+        "Description": "...",
+        "Tag": "...",
+        "PredefinedType": "...",
+        "psets": {
+          "Pset_WallCommon": {"LoadBearing": "true", "IsExternal": "false"},
+          "MeinNeuesPset":   {"Eigenschaft1": "Wert1"}
+        }
+      }
+    }
     """
     try:
         body = await request.json()
@@ -232,6 +328,8 @@ async def viewer_element_update(request: Request):
 
         ifc_type = elem.is_a()
 
+        # ── Einfache Attribute ──────────────────────────────────────────────
+        # IFC-Typ (is_a) ist unveränderlich – wird hier bewusst ausgelassen.
         simple_attrs = ["Name", "ObjectType", "Description", "Tag", "PredefinedType"]
         for attr in simple_attrs:
             if attr in changes:
@@ -239,14 +337,17 @@ async def viewer_element_update(request: Request):
                 try:
                     setattr(elem, attr, val if val != "" else None)
                 except Exception:
-                    pass
+                    pass  # Attribut existiert nicht in diesem IFC-Typ → ignorieren
 
+        # ── Property Sets ───────────────────────────────────────────────────
         pset_changes = changes.get("psets", {})
         for pset_name, props in pset_changes.items():
+            # Vorhandenes PSet suchen
             existing_pset = None
             try:
                 all_psets = ifcopenshell.util.element.get_psets(elem, psets_only=True)
                 if pset_name in all_psets:
+                    # PSet-Objekt aus dem Modell holen
                     for rel in model.by_type("IfcRelDefinesByProperties"):
                         pdef = rel.RelatingPropertyDefinition
                         if (pdef.is_a("IfcPropertySet") and
@@ -258,11 +359,16 @@ async def viewer_element_update(request: Request):
                 pass
 
             if existing_pset is None:
+                # Neues PSet anlegen – erst manuell die Entität erzeugen,
+                # dann mit IfcRelDefinesByProperties verknüpfen.
+                # (ifcopenshell.api.run("pset.add_pset") ist nur in neueren
+                #  Versionen verfügbar und kann den Fallback auslösen.)
                 try:
                     existing_pset = ifcopenshell.api.run(
                         "pset.add_pset", model, product=elem, name=pset_name
                     )
                 except Exception:
+                    import uuid as _uuid
                     existing_pset = model.create_entity(
                         "IfcPropertySet",
                         GlobalId=ifcopenshell.guid.new(),
@@ -281,11 +387,14 @@ async def viewer_element_update(request: Request):
                         RelatingPropertyDefinition=existing_pset,
                     )
 
+            # Eigenschaften im PSet setzen.
+            # Leere Property-Namen überspringen.
             for prop_name, prop_val in props.items():
                 prop_name = (prop_name or "").strip()
                 if not prop_name:
                     continue
 
+                # Vorhandene Property suchen
                 found_prop = None
                 current_props = list(existing_pset.HasProperties or [])
                 for p in current_props:
@@ -297,6 +406,8 @@ async def viewer_element_update(request: Request):
                     except Exception:
                         pass
 
+                # Nominalwert als IfcText-Entity verpacken
+                # (IfcText ist in allen IFC-Versionen ein gültiger Measure-Typ)
                 try:
                     nominal = model.create_entity("IfcText", str(prop_val))
                 except Exception:
@@ -324,14 +435,20 @@ async def viewer_element_update(request: Request):
                     except Exception:
                         pass
 
+        # ── Geändertes Modell speichern ─────────────────────────────────────
         model.write(path)
 
+        # Aktualisierte Daten für die UI zurückgeben
         updated_psets = {}
         try:
             updated_psets = ifcopenshell.util.element.get_psets(elem) or {}
         except Exception:
             pass
 
+        # Convert pset values to strings for JSON
+        # ifcopenshell.util.element.get_psets() injects an "id" key (the PSet's
+        # express-ID) into every property dict. We strip it here so it is never
+        # shown in the UI and never written back as a real IFC property.
         clean_psets = {}
         for pn, pv in updated_psets.items():
             if isinstance(pv, dict):
@@ -359,7 +476,7 @@ async def viewer_element_update(request: Request):
 def viewer_export_ifc(
     session_id: str = Query(...),
     slot: int       = Query(default=1),
-    fmt: str        = Query(default="ifc"),
+    fmt: str        = Query(default="ifc"),   # "ifc" oder "ifczip"
 ):
     """Liefert die (ggf. bearbeitete) IFC-Datei als Download."""
     if not session_exists(session_id):
@@ -400,6 +517,8 @@ def viewer_export_ifc(
 @router.get("/viewer/", response_class=HTMLResponse)
 def viewer_main(request: Request, session_id: str = Query(default=""), error: str = Query(default=""), project_id: str = Query(default="")):
 
+    # Keine Cookie-Session-Wiederverwendung mehr.
+    # Falls session_id fehlt oder ungültig → neue Session erstellen.
     if not session_id or not session_exists(session_id):
         session_id = create_upload_session()
 
@@ -407,12 +526,14 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     slots  = get_session_slots(session_id)
     labels = {s: _e(get_ifc_label(session_id, s)) for s in slots}
 
+    # JS-Array mit Modell-URLs
     model_urls_js = ",\n".join(
         f'{{url:"/viewer/file/?session_id={sid}&slot={s}",'
         f'label:{repr(labels[s])},slot:{s},color:{repr(_slot_color(s))}}}'
         for s in slots
     )
 
+    # Hinweis wenn leer – Upload läuft jetzt ausschließlich über Documents.
     if slots:
         empty_hint = ""
     elif project_id:
@@ -430,6 +551,7 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 
     error_html = f'<div class="flash-err" style="margin:8px 16px 0">⚠ {_e(error)}</div>' if error else ""
 
+    # Modell-Karten Sidebar
     model_cards = ""
     for s in slots:
         col = _slot_color(s)
@@ -456,6 +578,8 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
   </label>
 </div>"""
 
+    # Model/Viewer bietet keinen direkten Upload mehr an. Documents ist die
+    # dauerhafte Quelle; diese Sidebar zeigt nur die geladenen Viewer-Cache-Slots.
     if project_id:
         upload_html = f"""
 <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
@@ -476,12 +600,10 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 
     load_txt = "IFC-Dateien werden geladen …" if slots else "Keine Modelle aus Documents geladen."
 
-    # اصلاح شد: _topbar حذف شد، context_label مستقیم در body جاسازی شد
-    context_label = f"Projekt: {_e(project_id)[:8]}…" if project_id else f"Session: {sid[:8]}…"
-
     body = f"""
 <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
 
+  {_topbar(session_id, "viewer", project_id=project_id)}
   {error_html}{empty_hint}
 
   <div style="display:flex;flex:1;overflow:hidden">
@@ -495,7 +617,6 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
         color:#8ab;text-transform:uppercase;letter-spacing:.7px;
         display:flex;align-items:center;justify-content:space-between">
         <span>Modelle</span>
-        <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">{context_label}</span>
       </div>
       {upload_html}
       {model_cards}
@@ -592,6 +713,9 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 </script>
 
 <script>
+/* ── Session-Isolierung: Nur anonyme Legacy-Sessions beim Schließen löschen.
+   Projektbezogene Model-Sessions sind Viewer-Caches für Documents und dürfen
+   beim Navigieren zu Clash/Liste/Rulecheck nicht automatisch gelöscht werden. */
 (function() {{
   const SESSION_ID = "{_e(session_id)}";
   const PROJECT_ID = "{_e(project_id)}";
@@ -600,15 +724,19 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     return;
   }}
 
+  // Session-ID im sessionStorage des aktuellen Tabs speichern
   try {{ sessionStorage.setItem("bimpruef_session", SESSION_ID); }} catch(e) {{}}
 
+  // Hilfsfunktion: Session serverseitig löschen
   function deleteSession() {{
     const url = "/session/delete/";
     const body = JSON.stringify({{session_id: SESSION_ID}});
+    // navigator.sendBeacon ist für beforeunload/pagehide zuverlässig
     if (navigator.sendBeacon) {{
       const blob = new Blob([body], {{type: "application/json"}});
       navigator.sendBeacon(url, blob);
     }} else {{
+      // Synchroner Fallback für ältere Browser
       try {{
         const xhr = new XMLHttpRequest();
         xhr.open("DELETE", url, false);
@@ -618,12 +746,17 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
     }}
   }}
 
+  // pagehide ist zuverlässiger als beforeunload (funktioniert auch auf Mobile)
   window.addEventListener("pagehide", function(e) {{
+    // Nur löschen wenn das Dokument nicht im BFCache gehalten wird
+    // (persisted=false bedeutet: Tab/Fenster wird wirklich geschlossen
+    //  oder auf eine externe Seite navigiert)
     if (!e.persisted) {{
       deleteSession();
     }}
   }});
 
+  // Zusätzlich beforeunload als Fallback für Desktop-Browser
   window.addEventListener("beforeunload", function() {{
     deleteSession();
   }});
@@ -631,6 +764,8 @@ def viewer_main(request: Request, session_id: str = Query(default=""), error: st
 </script>"""
 
     return _page("BIMPruef 3D-Viewer", body)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -650,18 +785,22 @@ def _viewer_js(model_urls_js: str, highlight_gids: list = None, session_id: str 
         highlight_block = f"""
 const HIGHLIGHT_GIDS = new Set({gids_json});
 function applyClashHighlight() {{
+  // Kollisionselemente: Element 0 = leuchtendes Rot, Element 1 = leuchtendes Gelb
   const _clashArr = Array.from(HIGHLIGHT_GIDS);
   const _clashColorMap = {{}};
   _clashArr.forEach((gid, i) => {{
     _clashColorMap[gid] = i === 0 ? new THREE.Color(0xff3333) : new THREE.Color(0xffcc00);
   }});
 
+  // scene.traverse statt allMeshes() – immun gegen modelMeshes-Dict-Fehler
+  // (tritt auf wenn slot_a == slot_b und das Dict resettet wird)
   const sceneMeshes = [];
   scene.traverse(obj => {{ if (obj.isMesh) sceneMeshes.push(obj); }});
 
   for (const m of sceneMeshes) {{
     const gid = m.userData && m.userData.globalId;
     if (gid && HIGHLIGHT_GIDS.has(gid)) {{
+      // Kollisionselement: vollständig sichtbar, Solid-Farbe, opak
       m.material.color.set(_clashColorMap[gid] || new THREE.Color(0xff3333));
       m.material.opacity = 1.0;
       m.material.transparent = false;
@@ -669,15 +808,19 @@ function applyClashHighlight() {{
       m.material.needsUpdate = true;
       m.visible = true;
     }} else {{
+      // Alle anderen (inkl. Elemente ohne globalId wie Grid): stark transparent
       if (m.userData && m.userData.globalId !== undefined) {{
+        // IFC-Element: auf 4 % abdunkeln
         m.material.opacity = 0.04;
         m.material.transparent = true;
         m.material.wireframe = false;
         m.material.needsUpdate = true;
         m.visible = true;
       }}
+      // Grid, Hilfsobjekte etc. bleiben unverändert
     }}
   }}
+  // Highlighted Elemente in Kamera-Fokus
   const box = new THREE.Box3();
   for (const m of sceneMeshes) {{
     if (m.userData && HIGHLIGHT_GIDS.has(m.userData.globalId)) box.expandByObject(m);
@@ -821,14 +964,15 @@ canvas.addEventListener("wheel", e => {
 // ═══════════════════════════════════════════════════════════════════════════
 // Zustand
 // ═══════════════════════════════════════════════════════════════════════════
-const modelMeshes  = {};
-const modelGroups  = {};
-const catVisible   = {};
+const modelMeshes  = {};   // slot → Mesh[]
+const modelGroups  = {};   // slot → THREE.Group
+const catVisible   = {};   // "slot:typeName" → bool
 const hiddenIds    = new Set();
-const catCounts    = {};
-const catElements  = {};
-const slotMeta     = {};
+const catCounts    = {};   // "slot:typeName" → count
+const catElements  = {};   // "slot:typeName" → [{name, expressId, globalId}]
+const slotMeta     = {};   // slot → {label, color}
 
+// 2D / Void types – hidden by default, rendered as black wireframe lines
 const FLAT_TYPES = new Set([
   "IfcOpeningElement","IfcVoidingFeature","IfcAnnotation",
   "IfcGrid","IfcGridAxis","IfcSpace",
@@ -840,6 +984,7 @@ function allMeshes() {
   return Object.values(modelMeshes).flat();
 }
 
+// ─── Sichtbarkeit ──────────────────────────────────────────────────────────
 function applyVisibility() {
   for (const m of allMeshes()) {
     const key = catKey(m.userData.slot, m.userData.ifcType);
@@ -848,9 +993,12 @@ function applyVisibility() {
     const isFlat = FLAT_TYPES.has(m.userData.ifcType);
     m.visible = catOn && notHidden;
     if (m.visible && isFlat) {
+      // Render as black wireframe lines
       m.material.color.set(0x000000);
       m.material.wireframe = true;
       m.material.opacity = 1.0;
+    } else if (m.visible && !m.userData._colorApplied) {
+      // restore original color if it was changed
     }
   }
   updateHiddenCount();
@@ -870,11 +1018,13 @@ function updateHiddenCount() {
   }
 }
 
+// ─── Kategorie-UI (per-slot tree, 3 levels) ────────────────────────────────
 function buildCategoryUI() {
   const list = document.getElementById("cat-scroll");
   if (!list) return;
   list.innerHTML = "";
 
+  // Group catCounts by slot
   const bySlot = {};
   for (const key of Object.keys(catCounts)) {
     const colonIdx = key.indexOf(":");
@@ -889,6 +1039,7 @@ function buildCategoryUI() {
     const col  = meta.color || "#4fc3f7";
     const lbl  = meta.label || ("Slot " + slot);
 
+    // ── Level 1: File header ──
     const fileRow = document.createElement("div");
     fileRow.style.cssText = "padding:4px 8px;background:#0d1f38;border-bottom:1px solid #1a2e50;" +
       "display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;flex-shrink:0";
@@ -899,6 +1050,7 @@ function buildCategoryUI() {
         `text-overflow:ellipsis;white-space:nowrap" title="${esc(lbl)}">${esc(lbl)}</span>`;
     list.appendChild(fileRow);
 
+    // ── Level 1 body: type list ──
     const typeList = document.createElement("div");
     typeList.dataset.slotTree = slot;
 
@@ -910,6 +1062,7 @@ function buildCategoryUI() {
       const isFlat = FLAT_TYPES.has(type);
       const elems  = catElements[key] || [];
 
+      // ── Level 2: Category row ──
       const catRow = document.createElement("div");
       catRow.style.cssText = "display:flex;align-items:center;gap:5px;padding:3px 6px 3px 10px;" +
         "cursor:pointer;user-select:none;border-bottom:1px solid #111e35;" +
@@ -929,6 +1082,7 @@ function buildCategoryUI() {
         `<span style="font-size:10px;color:#556;flex-shrink:0">${count}</span>`;
       typeList.appendChild(catRow);
 
+      // ── Level 3: Element list (hidden by default) ──
       const elemList = document.createElement("div");
       elemList.style.display = "none";
       elemList.dataset.elemList = key;
@@ -945,10 +1099,14 @@ function buildCategoryUI() {
         eRow.addEventListener("mouseleave", () => eRow.style.background = "");
         eRow.addEventListener("click", e => {
           e.stopPropagation();
+          // Find and select the mesh for this expressId
           const target = allMeshes().find(m => m.userData.expressId === el.expressId);
           if (target) {
-            if (!target.visible) target.visible = true;
+            if (!target.visible) {
+              target.visible = true; // temporarily show for selection
+            }
             selectMesh(target);
+            // Fly camera to element
             const box = new THREE.Box3().setFromObject(target);
             if (!box.isEmpty()) {
               orb.tgt.copy(box.getCenter(new THREE.Vector3()));
@@ -961,6 +1119,7 @@ function buildCategoryUI() {
       }
       typeList.appendChild(elemList);
 
+      // Category row toggle: expand/collapse element list
       catRow.addEventListener("click", e => {
         if (e.target.classList.contains("cat-cb")) return;
         const tog = catRow.querySelector(".ctog");
@@ -972,6 +1131,7 @@ function buildCategoryUI() {
     }
     list.appendChild(typeList);
 
+    // File row toggle: expand/collapse type list
     fileRow.addEventListener("click", () => {
       const tog = fileRow.querySelector(".ftog");
       const collapsed = typeList.style.display === "none";
@@ -980,6 +1140,7 @@ function buildCategoryUI() {
     });
   }
 
+  // Checkbox handler (delegated to the whole list)
   list.addEventListener("change", e => {
     if (!e.target.classList.contains("cat-cb")) return;
     const key = e.target.dataset.catKey;
@@ -1001,6 +1162,7 @@ const btnCatNone = document.getElementById("btn-cat-none");
 if (btnCatAll)  btnCatAll.addEventListener("click",  () => setCatAll(true));
 if (btnCatNone) btnCatNone.addEventListener("click", () => setCatAll(false));
 
+// Modell-Checkboxen (delegiert)
 document.addEventListener("change", e => {
   if (!e.target.classList.contains("chk-model")) return;
   const slot = parseInt(e.target.dataset.slot);
@@ -1020,7 +1182,7 @@ async function initWebIfc() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// IFC-Modell laden
+// IFC-Modell laden und in Three.js-Szene einbauen
 // ═══════════════════════════════════════════════════════════════════════════
 async function loadModel(cfg) {
   if (loadTxtEl) loadTxtEl.textContent = `${cfg.label} wird geladen …`;
@@ -1029,11 +1191,13 @@ async function loadModel(cfg) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status} für ${cfg.label}`);
   const data = new Uint8Array(await resp.arrayBuffer());
 
+  // web-ifc öffnet immer IFC-Daten (IFCZIP wurde serverseitig entpackt)
   const modelId = webIfc.OpenModel(data, {
     COORDINATE_TO_ORIGIN: false,
     USE_FAST_BOOLS: false,
   });
 
+  // ── Alle Zeilen indexieren ──
   const elemIndex = {};
   const allLines  = webIfc.GetAllLines(modelId);
   for (let i = 0; i < allLines.size(); i++) {
@@ -1044,6 +1208,7 @@ async function loadModel(cfg) {
     } catch (_) {}
   }
 
+  // ── Typnamen aus TypeCode auflösen ──
   const _typeNameCache = {};
   function resolveTypeCode(code) {
     if (_typeNameCache[code] !== undefined) return _typeNameCache[code];
@@ -1079,6 +1244,7 @@ async function loadModel(cfg) {
     return String(v);
   }
 
+  // ── RelDefinesByProperties → PSets ──
   const relMap = {};
   for (const [id, line] of Object.entries(elemIndex)) {
     if (!typeName(line).toLowerCase().includes("reldefinesbyprop")) continue;
@@ -1118,6 +1284,7 @@ async function loadModel(cfg) {
     return res;
   }
 
+  // ── Three.js-Gruppe für dieses Modell ──
   const group = new THREE.Group();
   group.name  = cfg.label;
   scene.add(group);
@@ -1141,7 +1308,11 @@ async function loadModel(cfg) {
     if (!seenExpIds.has(expId)) {
       seenExpIds.add(expId);
       catCounts[key] = (catCounts[key] ?? 0) + 1;
-      if (catVisible[key] === undefined) catVisible[key] = !isFlat;
+      if (catVisible[key] === undefined) {
+        // 2D/void types hidden by default
+        catVisible[key] = !isFlat;
+      }
+      // Register element in category list
       if (!catElements[key]) catElements[key] = [];
       const eName = sv(line?.Name) || sv(line?.GlobalId) || String(expId);
       catElements[key].push({ name: eName, expressId: expId, globalId: sv(line?.GlobalId) });
@@ -1194,6 +1365,7 @@ async function loadModel(cfg) {
       const mesh = new THREE.Mesh(geo, mat.clone());
       mesh.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation));
       mesh.userData = Object.assign({}, meta);
+      // hide flat/2D types by default
       mesh.visible = !isFlat;
 
       group.add(mesh);
@@ -1204,10 +1376,13 @@ async function loadModel(cfg) {
   }
 
   webIfc.CloseModel(modelId);
+
+  const statusEl = document.getElementById(`status-m${cfg.slot}`);
+  if (statusEl) statusEl.textContent = `✓ ${vertCount.toLocaleString()} Vertices`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Einpassen
+// Einpassen (Kamera auf alle sichtbaren Meshes ausrichten)
 // ═══════════════════════════════════════════════════════════════════════════
 function fitAll() {
   const box = new THREE.Box3();
@@ -1222,6 +1397,7 @@ function fitAll() {
   gridHelper.position.y = box.min.y;
 }
 
+// HTML-Escape
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -1229,8 +1405,14 @@ function esc(s) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Info-Panel
+// Info-Panel  (mit Bearbeitungsmodus)
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Merkt sich alle noch nicht gespeicherten In-Memory-Änderungen pro Slot
+// Struktur: { slot: { expressId: { Name, ObjectType, …, psets: {…} } } }
+const pendingEdits = {};
+
+// Aktuelle Auswahl für den Speichern-Button
 let _editSlot      = null;
 let _editExpressId = null;
 
@@ -1244,6 +1426,7 @@ function showInfo(mesh) {
   const d  = mesh.userData;
   _editSlot      = d.slot;
   _editExpressId = d.expressId;
+
   _renderInfoPanel(d);
   infoPanel.style.width    = "300px";
   infoPanel.style.minWidth = "300px";
@@ -1252,6 +1435,7 @@ function showInfo(mesh) {
 function _renderInfoPanel(d) {
   const tc = "#" + getColor(d.ifcType).getHexString();
 
+  // Header
   let h = `
 <div style="font-size:11px;font-weight:bold;color:${d.slotColor};margin-bottom:8px;
   display:flex;align-items:center;justify-content:space-between">
@@ -1260,6 +1444,7 @@ function _renderInfoPanel(d) {
     border-radius:4px;padding:1px 6px" id="edit-dirty-badge" style="display:none">✎ ungespeichert</span>
 </div>`;
 
+  // Read-only fields
   h += `
 <div style="margin-bottom:10px">
   <div style="display:flex;gap:5px;margin-bottom:3px;align-items:center">
@@ -1278,6 +1463,7 @@ function _renderInfoPanel(d) {
   </div>
 </div>`;
 
+  // ── Editable core attributes ─────────────────────────────────────────────
   h += `<div style="border-top:1px solid #0f3460;padding-top:8px;margin-bottom:4px;
     font-size:10px;font-weight:700;color:#6af;text-transform:uppercase;
     letter-spacing:.4px">Bearbeitbare Attribute</div>`;
@@ -1303,6 +1489,7 @@ function _renderInfoPanel(d) {
 </div>`;
   }
 
+  // ── Property Sets ────────────────────────────────────────────────────────
   const psets = d.psets ?? {};
   h += `
 <div style="border-top:1px solid #0f3460;padding-top:8px;margin-top:6px;margin-bottom:4px;
@@ -1320,6 +1507,7 @@ function _renderInfoPanel(d) {
   }
   h += `</div>`;
 
+  // ── Action Buttons ───────────────────────────────────────────────────────
   h += `
 <div style="border-top:1px solid #0f3460;padding-top:10px;margin-top:10px;
   display:flex;flex-direction:column;gap:6px">
@@ -1354,6 +1542,8 @@ function _renderInfoPanel(d) {
 }
 
 function _renderPset(psetName, props) {
+  // ifcopenshell fügt ein "id"-Feld (Express-ID des PSets) in props ein –
+  // dieses darf nicht als editierbare Eigenschaft angezeigt oder gespeichert werden.
   const filteredProps = {};
   for (const [k, v] of Object.entries(props)) {
     if (k === "id") continue;
@@ -1364,6 +1554,7 @@ function _renderPset(psetName, props) {
   const propEntries = Object.keys(filteredProps);
 
   if (propEntries.length === 0) {
+    // Leeres PSet: zeige direkt eine befüllbare Zeile an
     propsHtml = _emptyPropRow();
   } else {
     for (const k of propEntries) {
@@ -1405,7 +1596,9 @@ function _propRowHtml(k, v) {
 </div>`;
 }
 
-function _emptyPropRow() { return _propRowHtml("", ""); }
+function _emptyPropRow() {
+  return _propRowHtml("", "");
+}
 
 function togglePsetBlock(header) {
   const propsDiv = header.nextElementSibling;
@@ -1426,9 +1619,10 @@ function addNewPset() {
   const container = document.getElementById("pset-container");
   if (!container) return;
   const tmp = document.createElement("div");
-  tmp.innerHTML = _renderPset(name.trim(), {});
+  tmp.innerHTML = _renderPset(name.trim(), {});  // {} → startet mit einer leeren Zeile
   const block = tmp.firstElementChild;
   container.appendChild(block);
+  // Sofort in das erste Eigenschaftsfeld fokussieren
   const firstKey = block.querySelector("[data-prop-key]");
   if (firstKey) firstKey.focus();
   markDirty();
@@ -1439,11 +1633,14 @@ function addPsetProp(btn) {
   if (!block) return;
   const propsDiv = block.querySelector(".pset-props");
   if (!propsDiv) return;
+
+  // PSet-Block aufklappen falls zugeklappt
   if (propsDiv.style.display === "none") {
     propsDiv.style.display = "";
     const arrow = block.querySelector(".pset-header-arrow");
     if (arrow) arrow.textContent = "▼";
   }
+
   const tmp = document.createElement("div");
   tmp.innerHTML = _propRowHtml("", "");
   const row = tmp.firstElementChild;
@@ -1460,6 +1657,7 @@ function removePropRow(btn) {
 }
 
 function discardElementChanges() {
+  // Re-render from original mesh userData
   if (!selectedMesh) return;
   _renderInfoPanel(selectedMesh.userData);
 }
@@ -1471,11 +1669,15 @@ async function saveElementChanges() {
   if (btn)    btn.disabled = true;
   if (status) status.innerHTML = '<span style="color:#7ab">Speichern …</span>';
 
+  // ── Collect edits from form ──────────────────────────────────────────────
   const changes = {};
+
+  // Core attributes
   for (const inp of infoBody.querySelectorAll("[data-edit-field]")) {
     changes[inp.dataset.editField] = inp.value;
   }
 
+  // PSet blocks
   const psets = {};
   for (const block of infoBody.querySelectorAll(".pset-edit-block")) {
     const psetName = block.dataset.pset;
@@ -1492,6 +1694,7 @@ async function saveElementChanges() {
   }
   changes.psets = psets;
 
+  // ── POST to server ───────────────────────────────────────────────────────
   try {
     const resp = await fetch("/viewer/element/update/", {
       method:  "POST",
@@ -1508,6 +1711,10 @@ async function saveElementChanges() {
     if (data.error) {
       if (status) status.innerHTML = `<span style="color:#f88">⚠ ${esc(data.error)}</span>`;
     } else {
+      // ── Update in-memory mesh userData ──────────────────────────────────
+      const newIfcType = changes.ifcType || selectedMesh.userData.ifcType;
+      const oldIfcType = selectedMesh.userData.ifcType;
+
       for (const m of allMeshes()) {
         if (m.userData.expressId !== _editExpressId || m.userData.slot !== _editSlot) continue;
         m.userData.name        = data.name        ?? changes.Name ?? m.userData.name;
@@ -1515,10 +1722,53 @@ async function saveElementChanges() {
         m.userData.description = data.description ?? changes.Description ?? m.userData.description;
         m.userData.tag         = data.tag         ?? changes.Tag ?? m.userData.tag;
         m.userData.psets       = data.psets       ?? psets;
+
+        if (data.type_changed && newIfcType !== oldIfcType) {
+          // Update type in userData
+          m.userData.ifcType = newIfcType;
+          // Update color
+          const newColor = getColor(newIfcType);
+          m.userData._origColor = newColor.clone();
+          if (m !== selectedMesh) m.material.color.copy(newColor);
+        }
+      }
+
+      // ── Update category tree if type changed ─────────────────────────────
+      if (data.type_changed && newIfcType !== oldIfcType) {
+        const slot = _editSlot;
+        const oldKey = catKey(slot, oldIfcType);
+        const newKey = catKey(slot, newIfcType);
+
+        // Move element from old category to new
+        const elemEntry = (catElements[oldKey] || []).find(e => e.expressId === _editExpressId);
+        if (elemEntry) {
+          catElements[oldKey] = (catElements[oldKey] || []).filter(e => e.expressId !== _editExpressId);
+          catCounts[oldKey]   = Math.max(0, (catCounts[oldKey] || 1) - 1);
+          if (catCounts[oldKey] === 0) {
+            delete catCounts[oldKey];
+            delete catElements[oldKey];
+            delete catVisible[oldKey];
+          }
+          elemEntry.name    = data.name || elemEntry.name;
+          elemEntry.ifcType = newIfcType;
+          if (!catElements[newKey]) catElements[newKey] = [];
+          catElements[newKey].push(elemEntry);
+          catCounts[newKey]  = (catCounts[newKey] || 0) + 1;
+          if (catVisible[newKey] === undefined) catVisible[newKey] = true;
+        }
+        buildCategoryUI();
+        buildSearchIndex();
+      }
+
+      // Update selectedMesh userData after type change
+      if (data.type_changed) {
+        selectedMesh.userData.ifcType = newIfcType;
       }
 
       if (status) status.innerHTML = '<span style="color:#4caf50">✓ Gespeichert</span>';
       setTimeout(() => { if (status) status.innerHTML = ""; }, 2500);
+
+      // Re-render info panel with updated data
       _renderInfoPanel(selectedMesh.userData);
     }
   } catch (err) {
@@ -1570,6 +1820,7 @@ canvas.addEventListener("mouseup", e => {
   else deselectAll();
 });
 
+// Leertaste → ausblenden
 window.addEventListener("keydown", e => {
   if (e.code !== "Space" || !selectedMesh) return;
   e.preventDefault();
@@ -1583,6 +1834,7 @@ window.addEventListener("keydown", e => {
   updateHiddenCount();
 });
 
+// ── Buttons ─────────────────────────────────────────────────────────────────
 const btnFit    = document.getElementById("btn-fit");
 const btnReset  = document.getElementById("btn-reset");
 const btnShowAll= document.getElementById("btn-show-all");
@@ -1603,6 +1855,7 @@ if (infoClose) infoClose.addEventListener("click", () => {
   infoPanel.style.minWidth = "0";
 });
 
+// ── Render-Loop ──────────────────────────────────────────────────────────────
 (function animate() {
   requestAnimationFrame(animate);
   renderer.render(scene, camera);
@@ -1617,7 +1870,10 @@ const searchInput   = document.getElementById("gid-search");
 const searchResults = document.getElementById("search-results");
 const searchClear   = document.getElementById("search-clear");
 
-const searchIndex = [];
+// Alle bekannten Elemente (dedupliziert nach globalId) für die Suche
+// Wird nach dem Laden aller Modelle befüllt
+const searchIndex = [];  // [{globalId, expressId, name, ifcType, slot, modelLabel, slotColor}]
+
 let searchHighlightActive = false;
 
 function buildSearchIndex() {
@@ -1643,6 +1899,7 @@ function clearSearchHighlight() {
   if (!searchHighlightActive) return;
   for (const m of allMeshes()) {
     m.material.opacity = m.userData.isFlat ? 1.0 : 0.90;
+    m.material.emissive && m.material.emissive.set(0x000000);
   }
   applyVisibility();
   searchHighlightActive = false;
@@ -1686,7 +1943,10 @@ function renderSearchResults(query) {
   }
   searchClear.style.display = "inline";
 
-  const hits = searchIndex.filter(el => el.globalId.toLowerCase().includes(q));
+  const hits = searchIndex.filter(el =>
+    el.globalId.toLowerCase().includes(q)
+  );
+
   searchResults.innerHTML = "";
 
   if (hits.length === 0) {
@@ -1697,6 +1957,7 @@ function renderSearchResults(query) {
     return;
   }
 
+  // Header
   const header = document.createElement("div");
   header.style.cssText = "padding:5px 12px;font-size:10px;color:#6af;border-bottom:1px solid #1a2e50;" +
     "display:flex;align-items:center;justify-content:space-between";
@@ -1708,6 +1969,7 @@ function renderSearchResults(query) {
   const visible50 = hits.slice(0, 50);
   const matchGids = hits.map(h => h.globalId);
 
+  // Highlight immediately
   applySearchHighlight(matchGids);
   if (hits.length <= 5) flyToGids(matchGids);
 
@@ -1730,6 +1992,7 @@ function renderSearchResults(query) {
     row.addEventListener("mouseenter", () => row.style.background = "#162a48");
     row.addEventListener("mouseleave", () => row.style.background = "");
     row.addEventListener("click", () => {
+      // Einzelnes Element fokussieren und selektieren
       const mesh = allMeshes().find(m => m.userData.globalId === el.globalId);
       if (mesh) {
         selectMesh(mesh);
@@ -1757,11 +2020,17 @@ function highlightMatch(text, q) {
 if (searchInput) {
   searchInput.addEventListener("input", e => renderSearchResults(e.target.value));
   searchInput.addEventListener("keydown", e => {
-    if (e.key === "Escape") { searchInput.value = ""; renderSearchResults(""); }
+    if (e.key === "Escape") {
+      searchInput.value = "";
+      renderSearchResults("");
+    }
   });
+  // Klick außerhalb schließt Dropdown
   document.addEventListener("mousedown", e => {
     const bar = document.getElementById("search-bar");
-    if (bar && !bar.contains(e.target)) searchResults.style.display = "none";
+    if (bar && !bar.contains(e.target)) {
+      searchResults.style.display = "none";
+    }
   });
   searchInput.addEventListener("focus", () => {
     if (searchInput.value.trim()) searchResults.style.display = "block";
@@ -1779,7 +2048,10 @@ if (searchClear) {
 // Bootstrap
 // ═══════════════════════════════════════════════════════════════════════════
 (async () => {
-  if (MODEL_URLS.length === 0) { loadingEl.style.display = "none"; return; }
+  if (MODEL_URLS.length === 0) {
+    loadingEl.style.display = "none";
+    return;
+  }
   try {
     await initWebIfc();
     for (const cfg of MODEL_URLS) {
@@ -1821,7 +2093,8 @@ def viewer_clash_legacy_redirect(
         '<div style="padding:40px;max-width:760px">'
         '<h2 style="font-size:20px;margin-bottom:10px">Clash-Analyse ist jetzt ein Projektmodul</h2>'
         '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">'
-        'Die Clash-Analyse wird nicht mehr im Viewer gestartet. Öffne ein Projekt und nutze dort den Reiter Clash.'
+        'Die Clash-Analyse wird nicht mehr im Viewer gestartet. Öffne ein Projekt und nutze dort den Reiter Clash. '
+        'IFC-Dateien werden aus Documents geladen; BCF-Export erfolgt im Issues-Modul.'
         '</p>'
         '<a class="btn btn-primary" href="/" style="text-decoration:none">Zu den Projekten</a>'
         '</div>'
@@ -1879,6 +2152,6 @@ def viewer_clash_bcf_removed():
 @router.get("/viewer/clash/bcf-single/")
 def viewer_clash_bcf_single_removed():
     return Response(
-        content="BCF-Export wurde aus dem Clash-Modul entfernt. Bitte Clash-Zeile als Issue speichern.",
+        content="BCF-Export wurde aus dem Clash-Modul entfernt. Bitte Clash-Zeile als Issue speichern und im Issues-Modul als BCF exportieren.",
         status_code=410,
     )
