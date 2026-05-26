@@ -161,6 +161,7 @@ def _project_subnav(project_id: str, active: str) -> str:
     items = [
         ("dashboard",  f"/projects/{pid}",             "Dashboard"),
         ("model",      f"/projects/{pid}/model",        "Model"),
+        ("view",       f"/projects/{pid}/view",         "Direct View"),
         ("documents",  f"/projects/{pid}/documents",    "Documents"),
         ("clash",      f"/projects/{pid}/clash",        "Clash"),
         ("list",       f"/projects/{pid}/list",         "List"),
