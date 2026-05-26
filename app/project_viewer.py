@@ -5,10 +5,9 @@ project_viewer.py – BIMPruef Direct Viewer
 هیچ وابستگی‌ای به session/slot قدیمی نداره.
 
 روت‌ها:
-  GET  /projects/{project_id}/view               → صفحه اصلی viewer
+  GET  /projects/{project_id}/view               → صفحه انتخاب مدل
   GET  /projects/{project_id}/view/file/{doc_id} → stream مستقیم IFC از R2
-  GET  /projects/{project_id}/view/select        → انتخاب مدل‌ها
-  POST /projects/{project_id}/view/select        → تأیید انتخاب و redirect به view
+  POST /projects/{project_id}/view/load          → لود مدل‌های انتخاب‌شده
 """
 
 from __future__ import annotations
@@ -19,8 +18,8 @@ import os
 import tempfile
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi import APIRouter, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.auth import require_user
 from app.document_storage import (
@@ -64,8 +63,8 @@ def _fmt_size(num: int) -> str:
 
 
 SLOT_COLORS = [
-    "#4fc3f7", "#ef9a9a", "#a5d6a7", "#ffcc80",
-    "#ce93d8", "#80cbc4", "#f48fb1", "#ffab40",
+    "#1E6FBF", "#D97706", "#059669", "#DC2626",
+    "#7C3AED", "#0891B2", "#BE185D", "#65A30D",
 ]
 
 def _slot_color(index: int) -> str:
@@ -73,16 +72,11 @@ def _slot_color(index: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# File streaming endpoint  (IFC مستقیم از R2)
+# File streaming endpoint
 # ─────────────────────────────────────────────────────────────────────────────
 
 @project_viewer_router.get("/projects/{project_id}/view/file/{document_id}")
 def view_file_stream(request: Request, project_id: str, document_id: str):
-    """
-    IFC فایل رو مستقیم از R2 stream می‌کنه به browser.
-    هیچ نیازی به session/slot نیست.
-    فایل موقت در /tmp نگه داشته میشه و بعد پاک میشه.
-    """
     account = _account_from_request(request)
     account_id = account["account_id"]
 
@@ -97,15 +91,12 @@ def view_file_stream(request: Request, project_id: str, document_id: str):
     if not (r2_enabled() and download_file_from_r2):
         return Response(content="R2 not configured", status_code=503)
 
-    # دانلود موقت به /tmp
     suffix = doc.get("file_extension", ".ifc")
     fd, tmp_path = tempfile.mkstemp(prefix="bpview-", suffix=suffix)
     os.close(fd)
 
     try:
         download_file_from_r2(doc["r2_key"], tmp_path)
-
-        # اگه ifczip بود، اول extract کن
         ifc_bytes = _read_ifc_bytes(tmp_path, doc.get("file_extension", ""))
 
         return Response(
@@ -127,12 +118,9 @@ def view_file_stream(request: Request, project_id: str, document_id: str):
 
 
 def _read_ifc_bytes(path: str, extension: str) -> bytes:
-    """IFC یا IFCZIP رو می‌خونه و bytes خالص IFC برمی‌گردونه."""
     import zipfile, io
-
     with open(path, "rb") as f:
         raw = f.read()
-
     ext = (extension or "").lower()
     if ext == ".ifczip":
         with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
@@ -140,102 +128,11 @@ def _read_ifc_bytes(path: str, extension: str) -> bytes:
             if not ifc_names:
                 raise ValueError("No .ifc file inside IFCZIP")
             return zf.read(ifc_names[0])
-
     return raw
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Select page
-# ─────────────────────────────────────────────────────────────────────────────
-
-@project_viewer_router.get("/projects/{project_id}/view/select", response_class=HTMLResponse)
-def view_select_page(
-    request: Request,
-    project_id: str,
-    error: str = Query(default=""),
-):
-    account = _account_from_request(request)
-    project = get_project(account["account_id"], project_id)
-    if not project:
-        return RedirectResponse("/", status_code=302)
-
-    docs = list_project_ifc_documents(account["account_id"], project_id)
-    pid = _e(project_id)
-
-    flash = f'<div class="flash-err" style="margin-bottom:16px">⚠ {_e(error)}</div>' if error else ""
-
-    if not docs:
-        content = f"""
-        {flash}
-        <div class="card" style="border-color:var(--accent2);text-align:center;padding:40px">
-          <h3 style="font-size:18px;margin-bottom:10px">کوئی IFC فایل موجود نیست</h3>
-          <p style="color:var(--muted);margin-bottom:20px;font-size:13px">
-            اول در Documents ماژول فایل IFC آپلود کن.
-          </p>
-          <a class="btn btn-primary" href="/projects/{pid}/documents" style="text-decoration:none">
-            برو به Documents
-          </a>
-        </div>
-        """
-    else:
-        rows = ""
-        for i, d in enumerate(docs):
-            col = _slot_color(i)
-            rows += f"""
-            <label style="display:flex;align-items:center;gap:12px;padding:12px 16px;
-              border:1px solid var(--border);border-radius:8px;cursor:pointer;
-              background:var(--surface2);transition:border-color .15s"
-              onmouseenter="this.style.borderColor='{col}'"
-              onmouseleave="this.style.borderColor='var(--border)'">
-              <input type="checkbox" name="doc_ids" value="{_e(d['document_id'])}" checked
-                style="width:15px;height:15px;accent-color:{col};flex-shrink:0">
-              <span style="width:10px;height:10px;border-radius:50%;background:{col};
-                flex-shrink:0;display:inline-block"></span>
-              <div style="flex:1;min-width:0">
-                <div style="font-weight:600;font-size:13px;overflow:hidden;
-                  text-overflow:ellipsis;white-space:nowrap">{_e(d['original_filename'])}</div>
-                <div style="font-size:11px;color:var(--muted)">{_e(d.get('folder_path') or 'Root')} · {_fmt_size(d.get('file_size',0))}</div>
-              </div>
-            </label>"""
-
-        content = f"""
-        {flash}
-        <div class="card" style="max-width:640px">
-          <h3 style="font-size:16px;margin-bottom:4px">مدل‌ها رو انتخاب کن</h3>
-          <p style="color:var(--muted);font-size:12px;margin-bottom:18px">
-            فایل‌های IFC انتخاب‌شده مستقیم از Documents بارگذاری میشن.
-          </p>
-          <form method="GET" action="/projects/{pid}/view">
-            <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
-              {rows}
-            </div>
-            <div style="display:flex;gap:10px">
-              <button type="submit" class="btn btn-primary" style="flex:1;justify-content:center">
-                ▶ باز کردن Viewer
-              </button>
-              <a href="/projects/{pid}" class="btn" style="text-decoration:none">← پروژه</a>
-            </div>
-          </form>
-        </div>
-        """
-
-    from app.projects import _page, _project_subnav, _topbar_global
-
-    body = f"""
-    {_topbar_global(account)}
-    {_project_subnav(project_id, "model")}
-    <div style="padding:28px 32px;max-width:1100px;margin:0 auto">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-        <h1 style="font-size:22px;font-weight:600">Direct Viewer – انتخاب مدل</h1>
-      </div>
-      {content}
-    </div>
-    """
-    return _page(f"{project['project_name']} – Viewer", body)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main viewer page
+# Main viewer page (model selection)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @project_viewer_router.get("/projects/{project_id}/view", response_class=HTMLResponse)
@@ -245,209 +142,410 @@ def view_main(
     doc_ids: list[str] = Query(default=[]),
     error: str = Query(default=""),
 ):
-    """
-    صفحه اصلی viewer.
-    doc_ids از query string میاد: ?doc_ids=abc&doc_ids=def
-    اگه doc_ids نباشه redirect به select می‌کنه.
-    """
     account = _account_from_request(request)
     account_id = account["account_id"]
     project = get_project(account_id, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
 
-    # اگه doc_ids نبود برو select
     all_ifc_docs = list_project_ifc_documents(account_id, project_id)
-    if not doc_ids:
-        # همه رو نمایش بده
-        doc_ids = [d["document_id"] for d in all_ifc_docs]
-        if not doc_ids:
-            return RedirectResponse(
-                f"/projects/{_e(project_id)}/view/select", status_code=302
-            )
 
-    # فقط doc_idهایی که واقعاً وجود دارن
+    # If no doc_ids selected, show selection page
+    if not doc_ids:
+        return _render_select_page(account, project, project_id, all_ifc_docs, error)
+
     valid_docs = {d["document_id"]: d for d in all_ifc_docs}
     selected_docs = [valid_docs[did] for did in doc_ids if did in valid_docs]
 
     if not selected_docs:
+        return _render_select_page(account, project, project_id, all_ifc_docs,
+                                   "هیچ مدل معتبری انتخاب نشده.")
+
+    return _render_viewer_page(account, project, project_id, selected_docs, all_ifc_docs, error)
+
+
+@project_viewer_router.post("/projects/{project_id}/view/load")
+def view_load(
+    request: Request,
+    project_id: str,
+    doc_ids: list[str] = Form(default=[]),
+):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+    project = get_project(account_id, project_id)
+    if not project:
+        return RedirectResponse("/", status_code=302)
+
+    if not doc_ids:
         return RedirectResponse(
-            f"/projects/{_e(project_id)}/view/select?error=No+valid+documents+selected",
-            status_code=302,
+            f"/projects/{_e(project_id)}/view?error=حداقل+یک+مدل+انتخاب+کنید",
+            status_code=303,
         )
 
-    # ساختن آرایه JS برای model URLs
+    from urllib.parse import urlencode
+    params = urlencode([("doc_ids", did) for did in doc_ids])
+    return RedirectResponse(f"/projects/{_e(project_id)}/view?{params}", status_code=303)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Selection Page
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_select_page(account, project, project_id, docs, error="") -> HTMLResponse:
+    from app.projects import _page, _project_subnav, _topbar_global
+
     pid = _e(project_id)
+    flash = f'<div class="flash-err" style="margin-bottom:16px">⚠ {_e(error)}</div>' if error else ""
+
+    if not docs:
+        content = f"""
+        {flash}
+        <div class="bp-card" style="text-align:center;padding:48px 32px;max-width:560px;margin:0 auto">
+          <div style="width:56px;height:56px;background:#EFF6FF;border-radius:12px;
+            display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+            <svg width="24" height="24" fill="none" stroke="#1E6FBF" stroke-width="1.8" viewBox="0 0 24 24">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+          <h3 style="font-size:17px;margin-bottom:8px;color:#0D1B2A">فایل IFC وجود ندارد</h3>
+          <p style="color:#4A5568;font-size:14px;margin-bottom:24px">
+            ابتدا در ماژول Documents فایل IFC آپلود کنید.
+          </p>
+          <a class="bp-btn bp-btn--primary" href="/projects/{pid}/documents" style="text-decoration:none">
+            رفتن به Documents
+          </a>
+        </div>
+        """
+    else:
+        doc_cards = ""
+        for i, d in enumerate(docs):
+            col = _slot_color(i)
+            col_light = _color_to_light_bg(col)
+            ext_badge = _e(d['file_extension'].upper().lstrip('.'))
+            doc_cards += f"""
+            <label style="display:flex;align-items:center;gap:14px;padding:14px 16px;
+              border:1.5px solid #E2E8F0;border-radius:10px;cursor:pointer;
+              background:#FFFFFF;transition:all 0.15s ease;
+              box-shadow:0 1px 3px rgba(13,27,42,0.05)"
+              onmouseenter="this.style.borderColor='{col}';this.style.boxShadow='0 2px 8px rgba(13,27,42,0.1)'"
+              onmouseleave="this.style.borderColor='#E2E8F0';this.style.boxShadow='0 1px 3px rgba(13,27,42,0.05)'">
+              <input type="checkbox" name="doc_ids" value="{_e(d['document_id'])}" checked
+                style="width:16px;height:16px;accent-color:{col};flex-shrink:0;cursor:pointer">
+              <div style="width:36px;height:36px;border-radius:8px;background:{col_light};
+                display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                <span style="font-size:10px;font-weight:700;color:{col}">{ext_badge}</span>
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:13px;color:#0D1B2A;
+                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{_e(d['original_filename'])}</div>
+                <div style="font-size:11px;color:#8896A5;margin-top:2px">
+                  {_e(d.get('folder_path') or 'Root')} · {_fmt_size(d.get('file_size', 0))}
+                </div>
+              </div>
+              <div style="width:10px;height:10px;border-radius:50%;
+                background:{col};flex-shrink:0"></div>
+            </label>"""
+
+        content = f"""
+        {flash}
+        <div style="max-width:640px;margin:0 auto">
+          <div class="bp-card">
+            <div style="margin-bottom:20px">
+              <h3 style="font-size:16px;font-weight:600;color:#0D1B2A;margin-bottom:6px">
+                انتخاب مدل‌های IFC
+              </h3>
+              <p style="color:#4A5568;font-size:13px">
+                مدل‌هایی که می‌خواهید در Viewer نمایش داده شوند را انتخاب کنید.
+              </p>
+            </div>
+            <form method="POST" action="/projects/{pid}/view/load" id="select-form">
+              <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+                {doc_cards}
+              </div>
+              <div style="display:flex;gap:10px;align-items:center">
+                <button type="submit" class="bp-btn bp-btn--primary" style="flex:1;justify-content:center">
+                  <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                  نمایش مدل‌های انتخابی
+                </button>
+                <a href="/projects/{pid}" class="bp-btn bp-btn--secondary" style="text-decoration:none">
+                  ← پروژه
+                </a>
+              </div>
+            </form>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+            <button type="button" onclick="toggleAll(true)"
+              style="font-size:12px;padding:4px 12px;background:#F0F2F5;border:1px solid #E2E8F0;
+              border-radius:6px;cursor:pointer;color:#4A5568">همه</button>
+            <button type="button" onclick="toggleAll(false)"
+              style="font-size:12px;padding:4px 12px;background:#F0F2F5;border:1px solid #E2E8F0;
+              border-radius:6px;cursor:pointer;color:#4A5568">هیچکدام</button>
+          </div>
+        </div>
+        <script>
+        function toggleAll(v) {{
+          document.querySelectorAll('input[name="doc_ids"]').forEach(c => c.checked = v);
+        }}
+        </script>
+        """
+
+    body = f"""
+    {_topbar_global(account)}
+    {_project_subnav(project_id, "model")}
+    <div style="padding:32px;background:#F5F6F8;min-height:calc(100vh - 94px)">
+      <div style="display:flex;align-items:center;justify-content:space-between;
+        margin-bottom:24px;max-width:640px;margin-left:auto;margin-right:auto">
+        <div>
+          <h1 style="font-size:22px;font-weight:700;color:#0D1B2A;margin-bottom:4px">
+            Direct Viewer
+          </h1>
+          <p style="color:#4A5568;font-size:13px">{_e(project['project_name'])}</p>
+        </div>
+      </div>
+      {content}
+    </div>
+    """
+    return _page(f"{project['project_name']} – Viewer", body)
+
+
+def _color_to_light_bg(hex_color: str) -> str:
+    """Convert hex color to a light background version."""
+    mapping = {
+        "#1E6FBF": "#EFF6FF",
+        "#D97706": "#FFFBEB",
+        "#059669": "#ECFDF5",
+        "#DC2626": "#FEF2F2",
+        "#7C3AED": "#F5F3FF",
+        "#0891B2": "#ECFEFF",
+        "#BE185D": "#FDF2F8",
+        "#65A30D": "#F7FEE7",
+    }
+    return mapping.get(hex_color, "#F5F6F8")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Viewer Page
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_docs, error="") -> HTMLResponse:
+    from app.projects import _page, _project_subnav, _topbar_global
+
+    pid = _e(project_id)
+
     model_entries = []
     for i, doc in enumerate(selected_docs):
         color = _slot_color(i)
         url = f"/projects/{pid}/view/file/{_e(doc['document_id'])}"
-        label = doc["original_filename"]
         model_entries.append({
             "url": url,
-            "label": label,
+            "label": doc["original_filename"],
             "color": color,
-            "document_id": doc["document_id"],
+            "documentId": doc["document_id"],
         })
 
     model_urls_js = ",\n".join(
-        f'{{url:{json.dumps(m["url"])},label:{json.dumps(m["label"])},color:{json.dumps(m["color"])},documentId:{json.dumps(m["document_id"])}}}'
+        f'{{url:{json.dumps(m["url"])},label:{json.dumps(m["label"])},color:{json.dumps(m["color"])},documentId:{json.dumps(m["documentId"])}}}'
         for m in model_entries
     )
 
-    # Select panel HTML برای تغییر مدل‌ها
+    # Sidebar doc list
     select_rows = ""
     for i, doc in enumerate(all_ifc_docs):
         checked = "checked" if doc["document_id"] in [d["document_id"] for d in selected_docs] else ""
         col = _slot_color(i)
         select_rows += f"""
-        <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;
-          border-radius:5px;cursor:pointer;font-size:11px;
-          background:{'rgba(79,195,247,.08)' if checked else 'transparent'}"
-          id="lbl-{_e(doc['document_id'])}">
+        <label style="display:flex;align-items:center;gap:8px;padding:7px 10px;
+          border-radius:6px;cursor:pointer;font-size:12px;
+          background:{'#EFF6FF' if checked else 'transparent'};
+          transition:background 0.12s"
+          id="lbl-{_e(doc['document_id'])}"
+          onmouseenter="if(!this.querySelector('input').checked)this.style.background='#F5F6F8'"
+          onmouseleave="if(!this.querySelector('input').checked)this.style.background='transparent'">
           <input type="checkbox" name="doc_ids" value="{_e(doc['document_id'])}" {checked}
-            style="width:12px;height:12px;accent-color:{col};flex-shrink:0"
-            onchange="toggleDocLabel('{_e(doc['document_id'])}',this.checked)">
-          <span style="width:8px;height:8px;border-radius:50%;background:{col};flex-shrink:0"></span>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1"
+            style="width:13px;height:13px;accent-color:{col};flex-shrink:0;cursor:pointer"
+            onchange="onDocToggle('{_e(doc['document_id'])}',this.checked,'{col}')">
+          <span style="width:9px;height:9px;border-radius:50%;background:{col};flex-shrink:0"></span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:#0D1B2A"
             title="{_e(doc['original_filename'])}">{_e(doc['original_filename'])}</span>
-          <span style="color:var(--muted);flex-shrink:0">{_fmt_size(doc.get('file_size',0))}</span>
+          <span style="color:#8896A5;flex-shrink:0;font-size:11px">{_fmt_size(doc.get('file_size',0))}</span>
         </label>"""
 
-    from app.projects import _page, _project_subnav, _topbar_global
-
-    error_html = f'<div style="position:absolute;top:56px;left:0;right:0;z-index:30;' \
-                 f'padding:8px 16px;background:#2a0a10;color:#ffaaaa;font-size:12px">' \
-                 f'⚠ {_e(error)}</div>' if error else ""
+    error_html = f"""
+    <div style="position:absolute;top:0;left:0;right:0;z-index:30;
+      padding:10px 16px;background:#FEE2E2;color:#991B1B;font-size:12px;
+      border-bottom:1px solid rgba(153,27,27,0.2);display:flex;align-items:center;gap:8px">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      {_e(error)}
+    </div>""" if error else ""
 
     body = f"""
 {_topbar_global(account)}
 {_project_subnav(project_id, "model")}
 
-<div style="display:flex;flex-direction:column;height:calc(100vh - 94px);overflow:hidden;position:relative">
+<div style="display:flex;flex-direction:column;height:calc(100vh - 94px);overflow:hidden;
+  position:relative;background:#F5F6F8">
   {error_html}
 
   <div style="display:flex;flex:1;overflow:hidden">
 
     <!-- ─── Sidebar ──────────────────────────────────────────────────────── -->
-    <div id="sidebar" style="width:240px;min-width:240px;background:var(--surface);
-      border-right:1px solid var(--border);display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0;transition:width .2s ease">
+    <div id="sidebar" style="width:260px;min-width:260px;background:#FFFFFF;
+      border-right:1px solid #E2E8F0;display:flex;flex-direction:column;
+      overflow:hidden;flex-shrink:0;box-shadow:1px 0 4px rgba(13,27,42,0.04)">
 
-      <!-- مدل‌های بارگذاری‌شده -->
-      <div style="padding:6px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <!-- مدل‌ها -->
+      <div style="padding:10px 12px;font-size:10px;font-weight:700;background:#F8FAFC;
+        color:#64748B;text-transform:uppercase;letter-spacing:.8px;
+        border-bottom:1px solid #E2E8F0;flex-shrink:0;
+        display:flex;align-items:center;justify-content:space-between">
         <span>📁 مدل‌ها</span>
-        <button onclick="reloadWithSelection()" title="اعمال تغییرات"
-          style="font-size:10px;padding:2px 7px;background:#0a2a40;border:1px solid #1e4a6e;
-          color:#4fc3f7;border-radius:3px;cursor:pointer;display:none" id="btn-apply-select">
+        <button onclick="applyDocSelection()" id="btn-apply-select" title="اعمال تغییرات"
+          style="display:none;font-size:10px;padding:2px 8px;background:#EFF6FF;
+          border:1px solid #BFDBFE;color:#1E6FBF;border-radius:4px;cursor:pointer;font-weight:600">
           ✓ اعمال
         </button>
       </div>
 
-      <div style="padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;
-        max-height:180px;overflow-y:auto">
+      <div style="padding:6px 8px;border-bottom:1px solid #E2E8F0;flex-shrink:0;
+        max-height:200px;overflow-y:auto">
         <form id="model-select-form" method="GET" action="/projects/{pid}/view">
           {select_rows}
         </form>
       </div>
 
       <!-- IFC ساختار -->
-      <div style="padding:5px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;flex-shrink:0;
-        display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
-        <span>🏗 IFC ساختار</span>
-        <span style="display:flex;gap:4px">
-          <button id="btn-cat-all" style="font-size:10px;cursor:pointer;color:#6af;
-            background:none;border:none;padding:0">همه</button>
-          &nbsp;
-          <button id="btn-cat-none" style="font-size:10px;cursor:pointer;color:#6af;
-            background:none;border:none;padding:0">هیچ</button>
+      <div style="padding:8px 12px;font-size:10px;font-weight:700;background:#F8FAFC;
+        color:#64748B;text-transform:uppercase;letter-spacing:.8px;
+        border-bottom:1px solid #E2E8F0;flex-shrink:0;
+        display:flex;align-items:center;justify-content:space-between">
+        <span>🏗 ساختار IFC</span>
+        <span style="display:flex;gap:6px">
+          <button id="btn-cat-all" style="font-size:10px;cursor:pointer;color:#1E6FBF;
+            background:none;border:none;padding:0;font-weight:600">همه</button>
+          <button id="btn-cat-none" style="font-size:10px;cursor:pointer;color:#1E6FBF;
+            background:none;border:none;padding:0;font-weight:600">هیچ</button>
         </span>
       </div>
-      <div id="cat-scroll" style="flex:1;overflow-y:auto;padding:2px 0">
-        <div style="padding:10px;font-size:11px;color:var(--muted);font-style:italic">
+      <div id="cat-scroll" style="flex:1;overflow-y:auto;padding:4px 0">
+        <div style="padding:12px;font-size:12px;color:#8896A5;font-style:italic">
           در حال بارگذاری…
         </div>
       </div>
 
-      <!-- وضعیت بارگذاری -->
-      <div id="load-status" style="padding:6px 10px;font-size:10px;color:var(--muted);
-        border-top:1px solid var(--border);flex-shrink:0"></div>
+      <!-- وضعیت -->
+      <div id="load-status" style="padding:6px 12px;font-size:11px;color:#64748B;
+        border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
     </div>
 
     <!-- ─── Canvas ──────────────────────────────────────────────────────── -->
-    <div id="canvas-wrap" style="flex:1;position:relative;overflow:hidden;background:#0e0e1a">
+    <div id="canvas-wrap" style="flex:1;position:relative;overflow:hidden;background:#F0F2F5">
 
       <canvas id="three-canvas" style="width:100%!important;height:100%!important;display:block"></canvas>
 
-      <!-- سرچ GlobalId -->
-      <div id="search-bar" style="position:absolute;top:10px;left:10px;z-index:10;width:300px">
+      <!-- جستجوی GlobalId -->
+      <div id="search-bar" style="position:absolute;top:12px;left:12px;z-index:10;width:300px">
         <div style="display:flex;gap:4px">
-          <input id="gid-search" type="text" placeholder="🔍 جستجوی GlobalId…"
-            style="flex:1;background:rgba(14,20,36,.93);border:1px solid var(--border);
-            color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;
-            outline:none;backdrop-filter:blur(6px)"
-            autocomplete="off">
-          <button id="search-clear" style="display:none;background:rgba(14,20,36,.93);
-            border:1px solid var(--border);color:var(--muted);border-radius:6px;
-            padding:5px 8px;cursor:pointer;font-size:12px">✕</button>
+          <div style="flex:1;position:relative">
+            <svg style="position:absolute;left:9px;top:50%;transform:translateY(-50%);pointer-events:none"
+              width="14" height="14" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            <input id="gid-search" type="text" placeholder="جستجوی GlobalId…"
+              style="width:100%;background:rgba(255,255,255,0.96);border:1px solid #E2E8F0;
+              color:#0D1B2A;padding:7px 10px 7px 30px;border-radius:8px;font-size:12px;
+              outline:none;backdrop-filter:blur(8px);
+              box-shadow:0 2px 8px rgba(13,27,42,0.08)"
+              autocomplete="off">
+          </div>
+          <button id="search-clear" style="display:none;background:rgba(255,255,255,0.96);
+            border:1px solid #E2E8F0;color:#8896A5;border-radius:8px;
+            padding:6px 10px;cursor:pointer;font-size:12px;
+            box-shadow:0 2px 8px rgba(13,27,42,0.08)">✕</button>
         </div>
         <div id="search-results" style="display:none;margin-top:4px;
-          background:rgba(14,20,36,.97);border:1px solid var(--border);
-          border-radius:6px;max-height:240px;overflow-y:auto;backdrop-filter:blur(6px)"></div>
+          background:rgba(255,255,255,0.98);border:1px solid #E2E8F0;
+          border-radius:8px;max-height:260px;overflow-y:auto;
+          box-shadow:0 4px 16px rgba(13,27,42,0.12)"></div>
       </div>
 
       <!-- دکمه‌های Overlay -->
-      <div style="position:absolute;top:10px;right:10px;display:flex;gap:4px;z-index:6">
-        <button id="btn-fit"   class="btn" style="font-size:11px;padding:4px 9px">⊡ Fit</button>
-        <button id="btn-reset" class="btn" style="font-size:11px;padding:4px 9px">⟳ Camera</button>
-        <button id="btn-show-all" class="btn btn-danger"
-          style="font-size:11px;padding:4px 9px;display:none">👁 همه</button>
-        <span id="hidden-count" style="font-size:11px;color:var(--accent2);display:none;align-self:center"></span>
+      <div style="position:absolute;top:12px;right:12px;display:flex;gap:6px;z-index:6">
+        <button id="btn-fit" style="font-size:12px;padding:6px 12px;background:rgba(255,255,255,0.95);
+          border:1px solid #E2E8F0;border-radius:7px;cursor:pointer;color:#0D1B2A;
+          box-shadow:0 2px 6px rgba(13,27,42,0.08);transition:all 0.12s">⊡ Fit</button>
+        <button id="btn-reset" style="font-size:12px;padding:6px 12px;background:rgba(255,255,255,0.95);
+          border:1px solid #E2E8F0;border-radius:7px;cursor:pointer;color:#0D1B2A;
+          box-shadow:0 2px 6px rgba(13,27,42,0.08);transition:all 0.12s">⟳ دوربین</button>
+        <button id="btn-show-all" style="font-size:12px;padding:6px 12px;display:none;
+          background:rgba(254,242,242,0.96);border:1px solid rgba(220,38,38,0.3);
+          border-radius:7px;cursor:pointer;color:#DC2626;
+          box-shadow:0 2px 6px rgba(13,27,42,0.08)">👁 همه</button>
+        <span id="hidden-count" style="font-size:11px;color:#DC2626;display:none;
+          align-self:center;background:rgba(254,242,242,0.95);
+          padding:4px 8px;border-radius:6px;border:1px solid rgba(220,38,38,0.2)"></span>
       </div>
 
-      <div style="position:absolute;bottom:10px;right:10px;font-size:10px;color:#445;
-        pointer-events:none">LMB چرخش · MMB Pan · Scroll زوم · Space: مخفی</div>
+      <!-- راهنما -->
+      <div style="position:absolute;bottom:12px;right:12px;font-size:11px;color:#8896A5;
+        background:rgba(255,255,255,0.85);padding:5px 10px;border-radius:6px;
+        border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)">
+        LMB چرخش · MMB Pan · Scroll زوم · Space مخفی
+      </div>
 
       <!-- Loading overlay -->
       <div id="loading" style="position:absolute;inset:0;display:flex;flex-direction:column;
-        align-items:center;justify-content:center;background:rgba(14,14,26,.95);z-index:20">
-        <div style="width:44px;height:44px;border:4px solid #0f3460;
-          border-top-color:var(--accent2);border-radius:50%;
-          animation:spin .7s linear infinite;margin-bottom:14px"></div>
-        <p id="load-txt" style="color:#889;font-size:13px;margin:0">
+        align-items:center;justify-content:center;background:rgba(240,242,245,0.95);z-index:20">
+        <div style="width:44px;height:44px;border:3px solid #BFDBFE;
+          border-top-color:#1E6FBF;border-radius:50%;
+          animation:spin .7s linear infinite;margin-bottom:16px"></div>
+        <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0">
           اتصال به R2…
         </p>
-        <div id="load-progress" style="margin-top:10px;width:200px;height:3px;
-          background:#1a2a4a;border-radius:2px;overflow:hidden">
-          <div id="load-bar" style="width:0%;height:100%;background:var(--accent);
+        <div id="load-progress" style="margin-top:12px;width:220px;height:3px;
+          background:#E2E8F0;border-radius:2px;overflow:hidden">
+          <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;
             transition:width .3s ease;border-radius:2px"></div>
         </div>
       </div>
     </div>
 
     <!-- ─── Info Panel ──────────────────────────────────────────────────── -->
-    <div id="info-panel" style="width:300px;min-width:300px;background:var(--surface);
-      border-left:1px solid var(--border);display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0;transition:width .2s ease">
-      <div style="padding:6px 10px;font-size:10px;font-weight:700;background:#0f2040;
-        color:#8ab;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-        <span>Element Info</span>
-        <span id="info-close" style="cursor:pointer;color:var(--muted);font-size:14px;
-          padding:0 4px" title="بستن">✕</span>
+    <div id="info-panel" style="width:300px;min-width:300px;background:#FFFFFF;
+      border-left:1px solid #E2E8F0;display:flex;flex-direction:column;
+      overflow:hidden;flex-shrink:0;box-shadow:-1px 0 4px rgba(13,27,42,0.04);
+      transition:width 0.2s ease">
+      <div style="padding:10px 12px;font-size:10px;font-weight:700;background:#F8FAFC;
+        color:#64748B;text-transform:uppercase;letter-spacing:.8px;
+        border-bottom:1px solid #E2E8F0;flex-shrink:0;
+        display:flex;align-items:center;justify-content:space-between">
+        <span>اطلاعات عنصر</span>
+        <span id="info-close" style="cursor:pointer;color:#8896A5;font-size:16px;
+          padding:0 4px;line-height:1" title="بستن">✕</span>
       </div>
-      <div id="info-body" style="flex:1;overflow-y:auto;padding:12px;font-size:12px">
-        <div style="color:var(--muted);font-style:italic;text-align:center;padding:20px 0">
-          روی یه المان کلیک کن.
+      <div id="info-body" style="flex:1;overflow-y:auto;padding:14px;font-size:12px">
+        <div style="color:#8896A5;font-style:italic;text-align:center;padding:24px 0">
+          روی یک عنصر کلیک کنید.
         </div>
       </div>
     </div>
 
   </div>
 </div>
+
+<style>
+@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+#btn-fit:hover, #btn-reset:hover {{
+  background: rgba(255,255,255,1) !important;
+  box-shadow: 0 3px 10px rgba(13,27,42,0.12) !important;
+}}
+</style>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -458,46 +556,46 @@ def view_main(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Three.js JavaScript  (مستقل از viewer قدیمی)
+# Three.js JavaScript (light theme, IFC colors, fixed search)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _direct_viewer_js(model_urls_js: str) -> str:
     return f"const MODEL_URLS = [{model_urls_js}];\n" + r"""
 
 // ═══════════════════════════════════════════════════════════════════
-// رنگ‌بندی IFC
+// IFC رنگ‌بندی (برای تم روشن)
 // ═══════════════════════════════════════════════════════════════════
 const TYPE_COLOR = {
-  IfcWall:0xc8a057, IfcWallStandardCase:0xc8a057, IfcCurtainWall:0xf0c040,
-  IfcColumn:0x2e6b9e, IfcColumnStandardCase:0x2e6b9e,
-  IfcBeam:0x5b9bd5, IfcBeamStandardCase:0x5b9bd5,
-  IfcSlab:0x7aaec8, IfcSlabStandardCase:0x7aaec8,
-  IfcRoof:0x8b5de5, IfcDoor:0xe07040, IfcWindow:0x70d8f0,
-  IfcStair:0xc87050, IfcStairFlight:0xc87050,
-  IfcRamp:0xd4a030, IfcRailing:0x607080,
-  IfcPlate:0x90b8d0, IfcMember:0x4898b0, IfcCovering:0x88b878,
-  IfcFooting:0x2a5070, IfcPile:0x1e3850,
-  IfcBuildingElementProxy:0x888888,
-  IfcFurnishingElement:0xe08860, IfcFurniture:0xe08860,
-  IfcSpace:0xa8d8a8, IfcOpeningElement:0x444466,
-  IfcPipeSegment:0x188880, IfcDuctSegment:0x607080,
+  IfcWall:0xa07840, IfcWallStandardCase:0xa07840, IfcCurtainWall:0xc09030,
+  IfcColumn:0x2a5c8a, IfcColumnStandardCase:0x2a5c8a,
+  IfcBeam:0x3a78b8, IfcBeamStandardCase:0x3a78b8,
+  IfcSlab:0x5a8ea8, IfcSlabStandardCase:0x5a8ea8,
+  IfcRoof:0x6b3db8, IfcDoor:0xb85030, IfcWindow:0x40b8d0,
+  IfcStair:0x9a5030, IfcStairFlight:0x9a5030,
+  IfcRamp:0xb88820, IfcRailing:0x405860,
+  IfcPlate:0x6090a8, IfcMember:0x3878a0, IfcCovering:0x608858,
+  IfcFooting:0x1a4060, IfcPile:0x103050,
+  IfcBuildingElementProxy:0x707080,
+  IfcFurnishingElement:0xb87050, IfcFurniture:0xb87050,
+  IfcSpace:0x88c888, IfcOpeningElement:0xdddddd,
+  IfcPipeSegment:0x108870, IfcDuctSegment:0x506870,
 };
 const TYPE_FALLBACK = [
-  [/^IfcWall/,0xc8a057],[/^IfcSlab/,0x7aaec8],[/^IfcColumn/,0x2e6b9e],
-  [/^IfcBeam/,0x5b9bd5],[/^IfcStair/,0xc87050],[/^IfcRoof/,0x8b5de5],
-  [/^IfcDoor/,0xe07040],[/^IfcWindow/,0x70d8f0],[/^IfcPipe/,0x188880],
-  [/^IfcFurnish/,0xe08860],[/^IfcElectric/,0xe0b830],
+  [/^IfcWall/,0xa07840],[/^IfcSlab/,0x5a8ea8],[/^IfcColumn/,0x2a5c8a],
+  [/^IfcBeam/,0x3a78b8],[/^IfcStair/,0x9a5030],[/^IfcRoof/,0x6b3db8],
+  [/^IfcDoor/,0xb85030],[/^IfcWindow/,0x40b8d0],[/^IfcPipe/,0x108870],
+  [/^IfcFurnish/,0xb87050],[/^IfcElectric/,0xc09810],
 ];
 const FLAT_TYPES = new Set(["IfcOpeningElement","IfcAnnotation","IfcGrid","IfcSpace"]);
 
 function getColor(t) {
   if (TYPE_COLOR[t] !== undefined) return new THREE.Color(TYPE_COLOR[t]);
   for (const [rx, hex] of TYPE_FALLBACK) if (rx.test(t)) return new THREE.Color(hex);
-  return new THREE.Color(0x777788);
+  return new THREE.Color(0x607080);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Three.js Setup
+// Three.js Setup (light background)
 // ═══════════════════════════════════════════════════════════════════
 const canvas   = document.getElementById("three-canvas");
 const wrap     = document.getElementById("canvas-wrap");
@@ -511,17 +609,22 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0e0e1a);
+scene.background = new THREE.Color(0xf0f2f5);
 
 const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 10000);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-const dirL = new THREE.DirectionalLight(0xffffff, 0.85);
-dirL.position.set(60, 100, 60);
-scene.add(dirL);
-scene.add(new THREE.HemisphereLight(0xddeeff, 0x100c08, 0.3));
+// Lighting برای تم روشن
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dirL1 = new THREE.DirectionalLight(0xffffff, 0.8);
+dirL1.position.set(60, 100, 60);
+scene.add(dirL1);
+const dirL2 = new THREE.DirectionalLight(0xffffff, 0.3);
+dirL2.position.set(-40, 40, -40);
+scene.add(dirL2);
+scene.add(new THREE.HemisphereLight(0xeef4ff, 0xd4c8a0, 0.4));
 
-const gridHelper = new THREE.GridHelper(200, 40, 0x1a2a3a, 0x151f30);
+// Grid روشن
+const gridHelper = new THREE.GridHelper(200, 40, 0xcccccc, 0xe0e0e0);
 scene.add(gridHelper);
 
 function onResize() {
@@ -577,13 +680,13 @@ canvas.addEventListener("wheel", e => {
 // ═══════════════════════════════════════════════════════════════════
 // State
 // ═══════════════════════════════════════════════════════════════════
-const modelMeshes = {};   // docId → Mesh[]
-const modelGroups = {};   // docId → Group
-const catVisible  = {};   // "docId:type" → bool
+const modelMeshes = {};
+const modelGroups = {};
+const catVisible  = {};
 const catCounts   = {};
 const catElements = {};
 const hiddenIds   = new Set();
-const docMeta     = {};   // docId → {label, color}
+const docMeta     = {};
 
 function catKey(docId, type) { return docId + ":" + type; }
 function allMeshes() { return Object.values(modelMeshes).flat(); }
@@ -606,7 +709,7 @@ function updateHiddenCount() {
   else { el.style.display = "none"; btn.style.display = "none"; }
 }
 
-// ── Category UI ───────────────────────────────────────────────────
+// ── Category UI (light theme) ──────────────────────────────────────
 function buildCategoryUI() {
   const list = document.getElementById("cat-scroll");
   if (!list) return;
@@ -623,40 +726,42 @@ function buildCategoryUI() {
 
   for (const docId of Object.keys(byDoc)) {
     const meta = docMeta[docId] || {};
-    const col  = meta.color || "#4fc3f7";
+    const col  = meta.color || "#1E6FBF";
     const lbl  = meta.label || docId.slice(0, 8);
 
     const fileRow = document.createElement("div");
-    fileRow.style.cssText = "padding:4px 8px;background:#0d1f38;border-bottom:1px solid #1a2e50;" +
-      "display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;flex-shrink:0";
+    fileRow.style.cssText = "padding:6px 10px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;" +
+      "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;flex-shrink:0";
     fileRow.innerHTML =
-      `<span class="ftog" style="color:#6af;font-size:10px;width:10px;flex-shrink:0">▼</span>` +
-      `<span style="width:8px;height:8px;border-radius:50%;border:2px solid ${col};flex-shrink:0"></span>` +
-      `<span style="font-size:11px;font-weight:600;color:${col};flex:1;overflow:hidden;` +
+      `<span class="ftog" style="color:#94A3B8;font-size:10px;width:10px;flex-shrink:0">▼</span>` +
+      `<span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0"></span>` +
+      `<span style="font-size:11px;font-weight:600;color:#0D1B2A;flex:1;overflow:hidden;` +
         `text-overflow:ellipsis;white-space:nowrap" title="${esc(lbl)}">${esc(lbl)}</span>`;
     list.appendChild(fileRow);
 
     const typeList = document.createElement("div");
     for (const type of Object.keys(byDoc[docId]).sort()) {
-      const key   = catKey(docId, type);
-      const vis   = catVisible[key] !== false;
-      const tCol  = "#" + getColor(type).getHexString();
-      const count = byDoc[docId][type];
+      const key    = catKey(docId, type);
+      const vis    = catVisible[key] !== false;
+      const tColHex = "#" + getColor(type).getHexString();
+      const count  = byDoc[docId][type];
       const isFlat = FLAT_TYPES.has(type);
 
       const catRow = document.createElement("div");
-      catRow.style.cssText = "display:flex;align-items:center;gap:5px;padding:3px 6px 3px 18px;" +
-        "cursor:pointer;user-select:none;border-bottom:1px solid #111e35;" +
-        `opacity:${vis ? "1" : ".45"}`;
+      catRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:4px 8px 4px 20px;" +
+        "cursor:pointer;user-select:none;border-bottom:1px solid #F1F5F9;" +
+        `opacity:${vis ? "1" : ".45"};transition:background 0.1s`;
       catRow.dataset.catKey = key;
       catRow.innerHTML =
         `<input class="cat-cb" type="checkbox" ${vis ? "checked" : ""} data-cat-key="${esc(key)}"
-           style="width:12px;height:12px;accent-color:#4af;flex-shrink:0">` +
-        `<span style="width:8px;height:8px;border-radius:50%;background:${isFlat ? "#222" : tCol};
+           style="width:12px;height:12px;accent-color:#1E6FBF;flex-shrink:0;cursor:pointer">` +
+        `<span style="width:8px;height:8px;border-radius:50%;background:${isFlat ? "#CBD5E1" : tColHex};
            flex-shrink:0"></span>` +
-        `<span style="font-size:11px;color:#bcd;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+        `<span style="font-size:11px;color:#1E293B;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
            title="${esc(type)}">${esc(type)}</span>` +
-        `<span style="font-size:10px;color:#556;flex-shrink:0">${count}</span>`;
+        `<span style="font-size:10px;color:#94A3B8;flex-shrink:0">${count}</span>`;
+      catRow.addEventListener("mouseenter", () => catRow.style.background = "#F8FAFC");
+      catRow.addEventListener("mouseleave", () => catRow.style.background = "");
       typeList.appendChild(catRow);
     }
     list.appendChild(typeList);
@@ -700,21 +805,20 @@ async function initWebIfc() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// بارگذاری مدل  (مستقیم از URL بدون session)
+// بارگذاری مدل
 // ═══════════════════════════════════════════════════════════════════
 async function loadModel(cfg, index, total) {
   if (loadTxt) loadTxt.textContent = `بارگذاری ${cfg.label} (${index}/${total})…`;
-  if (loadBar) loadBar.style.width = `${((index-1)/total)*100}%`;
+  if (loadBar) loadBar.style.width = `${((index-1)/total)*80}%`;
 
   const resp = await fetch(cfg.url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} برای ${cfg.label}`);
   const data = new Uint8Array(await resp.arrayBuffer());
 
-  if (loadBar) loadBar.style.width = `${(index/total)*90}%`;
+  if (loadBar) loadBar.style.width = `${((index-1)/total)*80 + 60/total}%`;
 
   const modelId = webIfc.OpenModel(data, { COORDINATE_TO_ORIGIN: false, USE_FAST_BOOLS: false });
 
-  // Index همه خطوط
   const elemIndex = {};
   const allLines = webIfc.GetAllLines(modelId);
   for (let i = 0; i < allLines.size(); i++) {
@@ -722,7 +826,6 @@ async function loadModel(cfg, index, total) {
     try { const l = webIfc.GetLine(modelId, id, false); if (l) elemIndex[id] = l; } catch(_) {}
   }
 
-  // TypeCode resolver
   const _tnc = {};
   function resolveTypeCode(code) {
     if (_tnc[code] !== undefined) return _tnc[code];
@@ -735,8 +838,7 @@ async function loadModel(cfg, index, total) {
         name = "Ifc" + parts.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join("");
       }
     } catch(_) {}
-    _tnc[code] = name;
-    return name;
+    _tnc[code] = name; return name;
   }
 
   function typeName(line) {
@@ -754,16 +856,13 @@ async function loadModel(cfg, index, total) {
     return String(v);
   }
 
-  // PSets map
   const relMap = {};
   for (const [id, line] of Object.entries(elemIndex)) {
     if (!typeName(line).toLowerCase().includes("reldefinesbyprop")) continue;
-    const pref = line.RelatingPropertyDefinition;
-    if (!pref) continue;
-    const pid = pref.value ?? pref;
-    const rels = line.RelatedObjects;
-    if (!rels) continue;
-    const ids = Array.isArray(rels) ? rels : [rels];
+    const pref = line.RelatingPropertyDefinition; if (!pref) continue;
+    const pid  = pref.value ?? pref;
+    const rels = line.RelatedObjects; if (!rels) continue;
+    const ids  = Array.isArray(rels) ? rels : [rels];
     for (const r of ids) {
       const rid = r?.value ?? r;
       if (!relMap[rid]) relMap[rid] = [];
@@ -774,19 +873,15 @@ async function loadModel(cfg, index, total) {
   function getPsets(eid) {
     const res = {};
     for (const pid of relMap[eid] ?? []) {
-      const pset = elemIndex[pid];
-      if (!pset) continue;
+      const pset = elemIndex[pid]; if (!pset) continue;
       const pn = sv(pset.Name) || typeName(pset);
       const props = {};
       const hp = pset.HasProperties;
       if (hp) {
         const list = Array.isArray(hp) ? hp : [hp];
         for (const ref of list) {
-          const id = ref?.value ?? ref;
-          const prop = elemIndex[id];
-          if (!prop) continue;
-          props[sv(prop.Name) || String(id)] =
-            prop.NominalValue != null ? sv(prop.NominalValue) : "–";
+          const id = ref?.value ?? ref; const prop = elemIndex[id]; if (!prop) continue;
+          props[sv(prop.Name) || String(id)] = prop.NominalValue != null ? sv(prop.NominalValue) : "–";
         }
       }
       res[pn] = props;
@@ -812,7 +907,7 @@ async function loadModel(cfg, index, total) {
     const line = elemIndex[expId];
     const tName = typeName(line);
     const isFlat = FLAT_TYPES.has(tName);
-    const tCol = isFlat ? new THREE.Color(0x222233) : getColor(tName);
+    const tCol = isFlat ? new THREE.Color(0xcccccc) : getColor(tName);
     const key = catKey(docId, tName);
 
     if (!seen.has(expId)) {
@@ -828,26 +923,17 @@ async function loadModel(cfg, index, total) {
     }
 
     const meta = {
-      expressId: expId,
-      ifcType: tName,
-      name: sv(line?.Name),
-      globalId: sv(line?.GlobalId),
-      objectType: sv(line?.ObjectType),
-      description: sv(line?.Description),
-      tag: sv(line?.Tag),
-      docId: docId,
-      modelLabel: cfg.label,
-      slotColor: cfg.color,
-      psets: getPsets(expId),
-      isFlat,
+      expressId: expId, ifcType: tName,
+      name: sv(line?.Name), globalId: sv(line?.GlobalId),
+      objectType: sv(line?.ObjectType), description: sv(line?.Description),
+      tag: sv(line?.Tag), docId: docId, modelLabel: cfg.label,
+      slotColor: cfg.color, psets: getPsets(expId), isFlat,
     };
 
     const mat = new THREE.MeshLambertMaterial({
-      color: tCol.clone(),
-      transparent: true,
-      opacity: isFlat ? 0.5 : 0.90,
-      wireframe: isFlat,
-      side: THREE.DoubleSide,
+      color: tCol.clone(), transparent: true,
+      opacity: isFlat ? 0.3 : 0.88,
+      wireframe: isFlat, side: THREE.DoubleSide,
     });
 
     const pgs = fm.geometries;
@@ -900,23 +986,24 @@ function fitAll() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Info Panel
+// Info Panel (light theme)
 // ═══════════════════════════════════════════════════════════════════
 let selectedMesh = null;
 let mouseMoved   = false;
 
 function showInfo(m) {
   const d = m.userData;
-  const tc = "#" + getColor(d.ifcType).getHexString();
+  const tColHex = "#" + getColor(d.ifcType).getHexString();
 
   let h = `
-<div style="font-size:11px;font-weight:bold;color:${d.slotColor};margin-bottom:10px">
+<div style="font-size:11px;font-weight:600;color:${d.slotColor};margin-bottom:10px;
+  padding-bottom:8px;border-bottom:1px solid #E2E8F0">
   ${esc(d.modelLabel)}
 </div>
 <div style="margin-bottom:10px">`;
 
   const fields = [
-    ["IFC Type", d.ifcType, tc, true],
+    ["IFC Type", d.ifcType, tColHex, true],
     ["GlobalId", d.globalId, null, false],
     ["Express ID", String(d.expressId), null, false],
     ["Name", d.name, null, false],
@@ -927,9 +1014,9 @@ function showInfo(m) {
   for (const [label, value, color, showDot] of fields) {
     if (!value) continue;
     h += `
-<div style="display:flex;gap:6px;margin-bottom:4px;align-items:flex-start">
-  <span style="color:#667;min-width:90px;flex-shrink:0;font-size:11px">${esc(label)}</span>
-  <span style="color:#cce;font-size:11px;word-break:break-all;display:flex;align-items:center;gap:4px">
+<div style="display:flex;gap:6px;margin-bottom:5px;align-items:flex-start">
+  <span style="color:#8896A5;min-width:86px;flex-shrink:0;font-size:11px;padding-top:1px">${esc(label)}</span>
+  <span style="color:#0D1B2A;font-size:11px;word-break:break-all;display:flex;align-items:center;gap:4px">
     ${showDot ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>` : ""}
     ${esc(value)}
   </span>
@@ -937,24 +1024,23 @@ function showInfo(m) {
   }
   h += "</div>";
 
-  // PSets
   const psets = d.psets || {};
   if (Object.keys(psets).length) {
-    h += `<div style="border-top:1px solid #0f3460;padding-top:8px;margin-top:4px;font-size:10px;
-      font-weight:700;color:#6af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">
-      Property Sets</div>`;
+    h += `<div style="border-top:1px solid #E2E8F0;padding-top:10px;margin-top:4px;
+      font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;
+      letter-spacing:.5px;margin-bottom:8px">Property Sets</div>`;
     for (const [pn, props] of Object.entries(psets)) {
-      h += `<div style="background:#0c1a30;border:1px solid #1a2e50;border-radius:5px;
-        margin-bottom:5px;overflow:hidden">
-        <div style="padding:4px 8px;background:#0a1a2a;font-size:11px;font-weight:600;
-          color:#4fc3f7;border-bottom:1px solid #1a2e50">${esc(pn)}</div>`;
+      h += `<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;
+        margin-bottom:6px;overflow:hidden">
+        <div style="padding:5px 9px;background:#F1F5F9;font-size:11px;font-weight:600;
+          color:#1E40AF;border-bottom:1px solid #E2E8F0">${esc(pn)}</div>`;
       const filteredProps = Object.entries(props).filter(([k]) => k !== "id");
       if (filteredProps.length) {
-        h += '<div style="padding:4px 8px">';
+        h += '<div style="padding:5px 9px">';
         for (const [k, v] of filteredProps) {
-          h += `<div style="display:flex;gap:6px;padding:2px 0;border-bottom:1px solid #0f1e30">
-            <span style="color:#556;font-size:10px;min-width:100px;flex-shrink:0">${esc(k)}</span>
-            <span style="color:#9bc;font-size:10px;word-break:break-all">${esc(String(v))}</span>
+          h += `<div style="display:flex;gap:6px;padding:2px 0;border-bottom:1px solid #F1F5F9">
+            <span style="color:#8896A5;font-size:10px;min-width:100px;flex-shrink:0">${esc(k)}</span>
+            <span style="color:#374151;font-size:10px;word-break:break-all">${esc(String(v))}</span>
           </div>`;
         }
         h += "</div>";
@@ -966,10 +1052,10 @@ function showInfo(m) {
   infoBody.innerHTML = h;
 }
 
-// Raycasting
+// ── Raycasting ────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
 const mouse     = new THREE.Vector2();
-const HIGHLIGHT = new THREE.Color(0xffff00);
+const HIGHLIGHT = new THREE.Color(0xff6600);
 
 canvas.addEventListener("mousedown", () => { mouseMoved = false; });
 canvas.addEventListener("mousemove", () => { mouseMoved = true; });
@@ -988,7 +1074,6 @@ canvas.addEventListener("mouseup", e => {
     m.material.color.copy(HIGHLIGHT);
     selectedMesh = m;
     showInfo(m);
-    // پنل باز
     const panel = document.getElementById("info-panel");
     panel.style.width = "300px";
     panel.style.minWidth = "300px";
@@ -997,7 +1082,7 @@ canvas.addEventListener("mouseup", e => {
       selectedMesh.material.color.copy(selectedMesh.userData._origColor);
       selectedMesh = null;
     }
-    infoBody.innerHTML = '<div style="color:var(--muted);font-style:italic;text-align:center;padding:20px 0">روی یه المان کلیک کن.</div>';
+    infoBody.innerHTML = '<div style="color:#8896A5;font-style:italic;text-align:center;padding:24px 0">روی یک عنصر کلیک کنید.</div>';
   }
 });
 
@@ -1010,11 +1095,11 @@ window.addEventListener("keydown", e => {
   for (const m of allMeshes()) if (m.userData.expressId === id) m.visible = false;
   selectedMesh.material.color.copy(selectedMesh.userData._origColor);
   selectedMesh = null;
-  infoBody.innerHTML = '<div style="color:var(--muted);font-style:italic;text-align:center;padding:20px 0">المان مخفی شد.</div>';
+  infoBody.innerHTML = '<div style="color:#8896A5;font-style:italic;text-align:center;padding:24px 0">عنصر مخفی شد.</div>';
   updateHiddenCount();
 });
 
-// ─── Buttons ─────────────────────────────────────────────────────
+// ── Buttons ─────────────────────────────────────────────────────────
 document.getElementById("btn-fit").addEventListener("click", fitAll);
 document.getElementById("btn-reset").addEventListener("click", () => {
   orb.tgt.set(0,0,0); orb.sph.set(80, Math.PI/4, Math.PI/4); applyOrb();
@@ -1027,27 +1112,29 @@ document.getElementById("info-close").addEventListener("click", () => {
   p.style.width = "0"; p.style.minWidth = "0";
 });
 
-// ─── Model checkboxes sidebar ─────────────────────────────────────
-function toggleDocLabel(docId, checked) {
+// ── مدیریت انتخاب مدل از sidebar ──────────────────────────────────
+function onDocToggle(docId, checked, color) {
   document.getElementById("btn-apply-select").style.display = "inline";
   const lbl = document.getElementById(`lbl-${docId}`);
-  if (lbl) lbl.style.background = checked ? "rgba(79,195,247,.08)" : "transparent";
+  if (lbl) lbl.style.background = checked ? "#EFF6FF" : "transparent";
 }
 
-function reloadWithSelection() {
+function applyDocSelection() {
   const form = document.getElementById("model-select-form");
   if (!form) return;
   const checked = [...form.querySelectorAll("input[name=doc_ids]:checked")].map(i => i.value);
-  if (!checked.length) { alert("حداقل یه مدل انتخاب کن."); return; }
+  if (!checked.length) { alert("حداقل یک مدل انتخاب کنید."); return; }
   const url = new URL(window.location.href);
   url.searchParams.delete("doc_ids");
   checked.forEach(id => url.searchParams.append("doc_ids", id));
   window.location.href = url.toString();
 }
 
-document.getElementById("btn-apply-select").addEventListener("click", reloadWithSelection);
+document.getElementById("btn-apply-select").addEventListener("click", applyDocSelection);
 
-// ─── Global Id Search ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// GlobalId Search (fixed)
+// ═══════════════════════════════════════════════════════════════════
 const searchInput   = document.getElementById("gid-search");
 const searchResults = document.getElementById("search-results");
 const searchClear   = document.getElementById("search-clear");
@@ -1071,99 +1158,127 @@ function buildSearchIndex() {
 
 function renderSearch(q) {
   q = q.trim().toLowerCase();
-  if (!q) { searchResults.style.display="none"; searchClear.style.display="none"; return; }
-  searchClear.style.display = "inline";
-  const hits = searchIndex.filter(e => e.globalId.toLowerCase().includes(q)).slice(0, 40);
-  if (!hits.length) {
-    searchResults.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:var(--muted)">نتیجه‌ای نیست</div>';
-    searchResults.style.display = "block"; return;
+  if (!q) {
+    searchResults.style.display = "none";
+    searchClear.style.display = "none";
+    return;
   }
-  let html = hits.map(el => {
-    const col = el.slotColor || "#4fc3f7";
-    const tCol = "#" + getColor(el.ifcType).getHexString();
+  searchClear.style.display = "inline";
+  const hits = searchIndex.filter(e => e.globalId.toLowerCase().includes(q)).slice(0, 50);
+
+  if (!hits.length) {
+    searchResults.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:#8896A5">نتیجه‌ای نیست</div>';
+    searchResults.style.display = "block";
+    return;
+  }
+
+  let html = `<div style="padding:5px 12px 5px;font-size:10px;color:#1E6FBF;font-weight:600;
+    border-bottom:1px solid #E2E8F0">${hits.length} نتیجه</div>`;
+
+  html += hits.map(el => {
+    const col = el.slotColor || "#1E6FBF";
+    const tColHex = "#" + getColor(el.ifcType).getHexString();
+    const gidDisplay = el.globalId.toLowerCase().replace(q,
+      `<span style="background:#FEF3C7;color:#92400E;border-radius:2px;padding:0 1px">${esc(q)}</span>`);
     return `<div class="s-row" data-gid="${esc(el.globalId)}"
-      style="padding:5px 10px;cursor:pointer;border-bottom:1px solid #0e1a2e;
-      display:flex;flex-direction:column;gap:1px">
-      <div style="display:flex;align-items:center;gap:5px">
-        <span style="width:7px;height:7px;border-radius:50%;background:${tCol};flex-shrink:0"></span>
-        <span style="font-size:11px;color:#cce;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      style="padding:7px 12px;cursor:pointer;border-bottom:1px solid #F1F5F9">
+      <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">
+        <span style="width:7px;height:7px;border-radius:50%;background:${tColHex};flex-shrink:0"></span>
+        <span style="font-size:12px;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${esc(el.name || el.ifcType)}</span>
         <span style="font-size:10px;color:${col};flex-shrink:0">${esc(el.ifcType)}</span>
       </div>
-      <div style="font-size:10px;color:#4a7090;font-family:monospace;padding-left:12px">
-        ${esc(el.globalId)}</div>
+      <div style="font-size:10px;color:#64748B;font-family:monospace;padding-left:12px">${gidDisplay}</div>
     </div>`;
   }).join("");
-  searchResults.innerHTML = `<div style="padding:4px 12px;font-size:10px;color:#6af;
-    border-bottom:1px solid #1a2e50">${hits.length} نتیجه</div>` + html;
+
+  searchResults.innerHTML = html;
   searchResults.style.display = "block";
+
   searchResults.querySelectorAll(".s-row").forEach(row => {
-    row.addEventListener("mouseenter", () => row.style.background = "#162a48");
+    row.addEventListener("mouseenter", () => row.style.background = "#F8FAFC");
     row.addEventListener("mouseleave", () => row.style.background = "");
     row.addEventListener("click", () => {
       const gid = row.dataset.gid;
+      // Find mesh by globalId
       const mesh = allMeshes().find(m => m.userData.globalId === gid);
-      if (!mesh) return;
-      if (selectedMesh && selectedMesh !== mesh)
-        selectedMesh.material.color.copy(selectedMesh.userData._origColor);
-      if (!mesh.userData._origColor) mesh.userData._origColor = mesh.material.color.clone();
-      mesh.material.color.copy(HIGHLIGHT);
-      selectedMesh = mesh;
-      showInfo(mesh);
-      const box = new THREE.Box3().setFromObject(mesh);
-      if (!box.isEmpty()) {
-        orb.tgt.copy(box.getCenter(new THREE.Vector3()));
-        orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.5, 2);
-        applyOrb();
+      if (!mesh) {
+        // Try case-insensitive
+        const meshAlt = allMeshes().find(m =>
+          m.userData.globalId && m.userData.globalId.toLowerCase() === gid.toLowerCase()
+        );
+        if (!meshAlt) return;
+        selectAndFocus(meshAlt);
+      } else {
+        selectAndFocus(mesh);
       }
       searchResults.style.display = "none";
     });
   });
 }
 
+function selectAndFocus(mesh) {
+  if (selectedMesh && selectedMesh !== mesh)
+    selectedMesh.material.color.copy(selectedMesh.userData._origColor);
+  if (!mesh.userData._origColor) mesh.userData._origColor = mesh.material.color.clone();
+  mesh.material.color.copy(HIGHLIGHT);
+  selectedMesh = mesh;
+  showInfo(mesh);
+  const panel = document.getElementById("info-panel");
+  panel.style.width = "300px"; panel.style.minWidth = "300px";
+  const box = new THREE.Box3().setFromObject(mesh);
+  if (!box.isEmpty()) {
+    orb.tgt.copy(box.getCenter(new THREE.Vector3()));
+    orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.5, 2);
+    applyOrb();
+  }
+}
+
 searchInput.addEventListener("input", e => renderSearch(e.target.value));
 searchInput.addEventListener("keydown", e => {
   if (e.key === "Escape") { searchInput.value = ""; renderSearch(""); }
 });
-searchClear.addEventListener("click", () => { searchInput.value = ""; renderSearch(""); searchInput.focus(); });
+searchClear.addEventListener("click", () => {
+  searchInput.value = ""; renderSearch(""); searchInput.focus();
+});
 document.addEventListener("mousedown", e => {
   const bar = document.getElementById("search-bar");
   if (bar && !bar.contains(e.target)) searchResults.style.display = "none";
 });
 
-// ─── Render loop ──────────────────────────────────────────────────
+// ── Render loop ────────────────────────────────────────────────────
 (function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); })();
 
 // ═══════════════════════════════════════════════════════════════════
 // Bootstrap
 // ═══════════════════════════════════════════════════════════════════
 function esc(s) {
-  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
 (async () => {
   if (!MODEL_URLS.length) {
     loadEl.style.display = "none";
-    if (loadStatus) loadStatus.textContent = "کوئی مدل انتخاب نشده.";
+    if (loadStatus) loadStatus.textContent = "مدلی انتخاب نشده.";
     return;
   }
   try {
     await initWebIfc();
     let total = 0;
     for (let i = 0; i < MODEL_URLS.length; i++) {
-      const cfg = MODEL_URLS[i];
       try {
-        const v = await loadModel(cfg, i + 1, MODEL_URLS.length);
+        const v = await loadModel(MODEL_URLS[i], i + 1, MODEL_URLS.length);
         total += v;
       } catch(err) {
-        console.error("خطا در بارگذاری:", cfg.label, err);
+        console.error("خطا:", MODEL_URLS[i].label, err);
         if (loadStatus) loadStatus.textContent = `⚠ ${err.message}`;
       }
     }
+    if (loadBar) loadBar.style.width = "100%";
     buildCategoryUI();
     buildSearchIndex();
     fitAll();
-    if (loadBar) loadBar.style.width = "100%";
     if (loadStatus) loadStatus.textContent = `✓ ${MODEL_URLS.length} مدل · ${total.toLocaleString()} vertices`;
   } catch(err) {
     if (loadTxt) loadTxt.textContent = "خطا: " + err.message;
