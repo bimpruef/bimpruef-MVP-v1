@@ -85,7 +85,7 @@ from app.templates import (
 )
 
 logger = logging.getLogger(__name__)
-
+from app.project_viewer import project_viewer_router
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Konfiguration
