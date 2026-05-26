@@ -157,7 +157,7 @@ app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
 app.include_router(viewer_router)
 app.include_router(list_router)
-
+app.include_router(project_viewer_router)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Debug – Cloudflare R2 Verbindung testen
