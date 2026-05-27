@@ -150,12 +150,13 @@ def view_main(
 
     all_ifc_docs = list_project_ifc_documents(account_id, project_id)
 
-    # Standardmäßig alle Dokumente laden wenn keine Auswahl
-    if not doc_ids:
-        doc_ids = [d["document_id"] for d in all_ifc_docs]
-
+    # ── CHANGE 1 ──────────────────────────────────────────────────────────────
+    # Viewer starts empty on first open. Models are only loaded when the user
+    # explicitly selects them and clicks "Laden" in the sidebar.
+    # No automatic fallback to "load all" when doc_ids is empty.
     valid_docs = {d["document_id"]: d for d in all_ifc_docs}
     selected_docs = [valid_docs[did] for did in doc_ids if did in valid_docs]
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Viewer immer rendern (auch ohne Modelle – leerer Viewer)
     return _render_viewer_page(account, project, project_id, selected_docs, all_ifc_docs, error)
@@ -216,9 +217,10 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
     )
 
     # Sidebar Dokumentenliste mit Checkboxen
+    selected_ids = {d["document_id"] for d in selected_docs}
     select_rows = ""
     for i, doc in enumerate(all_ifc_docs):
-        checked = "checked" if doc["document_id"] in [d["document_id"] for d in selected_docs] else ""
+        checked = "checked" if doc["document_id"] in selected_ids else ""
         col = _slot_color(i)
         col_light = _color_to_light_bg(col)
         ext_badge = _e(doc['file_extension'].upper().lstrip('.'))
@@ -273,6 +275,13 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
           </div>
         </div>"""
 
+    # ── CHANGE 2 ──────────────────────────────────────────────────────────────
+    # "Laden" button is always visible so user can load models on first open.
+    # Previously it was hidden (display:none) and only shown after a checkbox
+    # change, which meant the button never appeared on a fresh empty viewer.
+    laden_btn_display = "inline"
+    # ─────────────────────────────────────────────────────────────────────────
+
     body = f"""
 {_topbar_global(account)}
 {_project_subnav(project_id, "model")}
@@ -295,7 +304,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
         display:flex;align-items:center;justify-content:space-between">
         <span>📁 IFC-Modelle</span>
         <button onclick="applyDocSelection()" id="btn-apply-select"
-          style="display:none;font-size:10px;padding:3px 10px;background:#1E6FBF;
+          style="display:{laden_btn_display};font-size:10px;padding:3px 10px;background:#1E6FBF;
           border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:600;
           transition:opacity 0.15s" title="Auswahl übernehmen">
           ✓ Laden
@@ -1250,8 +1259,7 @@ document.getElementById("info-close").addEventListener("click", () => {
 // Modellauswahl in der Sidebar
 // ═══════════════════════════════════════════════════════════════════════════
 function onDocToggle(docId, checked) {
-  const btn = document.getElementById("btn-apply-select");
-  if (btn) btn.style.display = "inline";
+  // "Laden" button is always visible; just update the label styling
   const lbl = document.getElementById(`lbl-${docId}`);
   if (lbl) {
     lbl.style.background = checked ? "rgba(30,111,191,0.06)" : "transparent";
