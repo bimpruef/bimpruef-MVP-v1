@@ -539,7 +539,46 @@ const IFC_TYPE_STYLES = {
 
 const FLAT_TYPES = new Set(["IfcOpeningElement","IfcAnnotation","IfcGrid","IfcSpace"]);
 
-function getTypeStyle(t) {
+const IFC_ENTITY_COLOR_PALETTE = [
+  "#1E6FBF", "#B85030", "#40B8D0", "#A07840", "#5A8EA8", "#2A5C8A",
+  "#3A78B8", "#6B3DB8", "#108870", "#E09810", "#B87050", "#707080",
+];
+const IFC_CATEGORY_COLOR_STORAGE_KEY = "bimpruef:ifc-category-colors:v1";
+let ifcCategoryColorOverrides = {};
+try {
+  ifcCategoryColorOverrides = JSON.parse(localStorage.getItem(IFC_CATEGORY_COLOR_STORAGE_KEY) || "{}") || {};
+} catch (_) {
+  ifcCategoryColorOverrides = {};
+}
+
+function normalizeHexColor(value) {
+  const s = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toUpperCase();
+  if (/^[0-9a-fA-F]{6}$/.test(s)) return ("#" + s).toUpperCase();
+  return "";
+}
+
+function intToHexColor(value) {
+  if (value == null || Number.isNaN(Number(value))) return "";
+  return "#" + (Number(value) & 0xffffff).toString(16).padStart(6, "0").toUpperCase();
+}
+
+function hexToIntColor(hex) {
+  const h = normalizeHexColor(hex) || "#607080";
+  return parseInt(h.slice(1), 16);
+}
+
+function colorWithAlpha(hex, alpha = "18") {
+  return (normalizeHexColor(hex) || "#607080") + alpha;
+}
+
+function hashColorForEntity(entity) {
+  let hash = 0;
+  for (const ch of String(entity || "IfcElement")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  return IFC_ENTITY_COLOR_PALETTE[Math.abs(hash) % IFC_ENTITY_COLOR_PALETTE.length];
+}
+
+function getBaseTypeStyle(t) {
   if (IFC_TYPE_STYLES[t]) return IFC_TYPE_STYLES[t];
   // Fallback-Gruppen
   if (/^IfcWall/.test(t))    return { color: 0xa07840, lightColor: '#FEF3C7', icon: '▭', group: 'Tragwerk' };
@@ -555,7 +594,43 @@ function getTypeStyle(t) {
   if (/^IfcCable/.test(t))   return { color: 0xe09810, lightColor: '#FEFCE8', icon: '⌇', group: 'TGA' };
   if (/^IfcFurnish/.test(t)) return { color: 0xb87050, lightColor: '#FEF2E2', icon: '⊡', group: 'Ausbau' };
   if (/^IfcFlow/.test(t))    return { color: 0x40a880, lightColor: '#ECFDF5', icon: '⊸', group: 'TGA' };
-  return { color: 0x607080, lightColor: '#F8FAFC', icon: '◆', group: 'Sonstiges' };
+  return { color: hexToIntColor(hashColorForEntity(t)), lightColor: '#F8FAFC', icon: '◆', group: 'Sonstiges' };
+}
+
+function getTypeStyle(t) {
+  const base = getBaseTypeStyle(t);
+  const customHex = normalizeHexColor(ifcCategoryColorOverrides[t]);
+  const colorHex = customHex || intToHexColor(base.color) || hashColorForEntity(t);
+  return {
+    ...base,
+    color: hexToIntColor(colorHex),
+    colorHex,
+    lightColor: customHex ? colorWithAlpha(colorHex, "18") : (base.lightColor || colorWithAlpha(colorHex, "18")),
+  };
+}
+
+function saveCategoryColorOverrides() {
+  try {
+    localStorage.setItem(IFC_CATEGORY_COLOR_STORAGE_KEY, JSON.stringify(ifcCategoryColorOverrides));
+  } catch (_) {}
+}
+
+function setCategoryColor(entity, hex) {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return;
+  ifcCategoryColorOverrides[entity] = normalized;
+  saveCategoryColorOverrides();
+
+  const style = getTypeStyle(entity);
+  const next = new THREE.Color(style.color);
+  for (const m of allMeshes()) {
+    if (m.userData.ifcType !== entity) continue;
+    m.userData.typeStyle = style;
+    m.userData._baseColor = next.clone();
+    m.userData._origColor = next.clone();
+    if (m !== selectedMesh) m.material.color.copy(next);
+  }
+  if (selectedMesh && selectedMesh.userData.ifcType === entity) showInfo(selectedMesh);
 }
 
 function getColor(t) {
@@ -651,21 +726,29 @@ canvas.addEventListener("wheel", e => {
 // ═══════════════════════════════════════════════════════════════════════════
 const modelMeshes = {};   // docId → Mesh[]
 const modelGroups = {};   // docId → THREE.Group
-const catVisible  = {};   // "docId:type" → bool
-const catCounts   = {};   // "docId:type" → count
-const catElements = {};   // "docId:type" → [{name, expressId, globalId}]
-const hiddenIds   = new Set();
-const docMeta     = {};   // docId → {label, color}
+const structureTree = {}; // IfcEntity → Typname → [{name, expressId, globalId, docId}]
+const entityVisible = {}; // IfcEntity → bool
+const typeVisible   = {}; // "IfcEntity::Typname" → bool
+const hiddenIds     = new Set(); // "docId::expressId"
+const docMeta       = {};   // docId → {label, color}
 
-function catKey(docId, type) { return docId + "::" + type; }
+function typeKey(entity, typeName) { return entity + "::" + (typeName || "Ohne Typ"); }
+function meshInstanceKey(m) { return (m?.userData?.docId || "") + "::" + (m?.userData?.expressId ?? ""); }
 function allMeshes() { return Object.values(modelMeshes).flat(); }
+function displayEntityName(entity) { return String(entity || "Unknown").replace(/^Ifc/, "") || "Unknown"; }
+function displayTypeName(typeName) { return String(typeName || "Ohne Typ").replace(/^Ifc/, "") || "Ohne Typ"; }
+function entityElementCount(entity) {
+  return Object.values(structureTree[entity] || {}).reduce((sum, list) => sum + list.length, 0);
+}
+function isStructureTypeVisible(entity, typeName) {
+  return entityVisible[entity] !== false && typeVisible[typeKey(entity, typeName)] !== false;
+}
 
 // ── Sichtbarkeit ────────────────────────────────────────────────────────────
 function applyVisibility() {
   for (const m of allMeshes()) {
-    const key = catKey(m.userData.docId, m.userData.ifcType);
-    const catOn = catVisible[key] !== false;
-    const notHidden = !hiddenIds.has(m.userData.expressId);
+    const catOn = isStructureTypeVisible(m.userData.ifcType, m.userData.typeName || "Ohne Typ");
+    const notHidden = !hiddenIds.has(meshInstanceKey(m));
     m.visible = catOn && notHidden;
   }
   updateHiddenCount();
@@ -686,222 +769,226 @@ function updateHiddenCount() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// IFC-Kategorie-Baum (nach Gruppe → Typ → Elemente)
+// IFC-Struktur-Baum (IFC-Entity → Typname → Elementname)
 // ═══════════════════════════════════════════════════════════════════════════
 function buildCategoryUI() {
   const list = document.getElementById("cat-scroll");
   if (!list) return;
   list.innerHTML = "";
 
-  // Daten strukturieren: docId → Gruppe → Typ → Count
-  const byDoc = {};
-  for (const key of Object.keys(catCounts)) {
-    const sep = key.indexOf("::");
-    const docId = key.slice(0, sep);
-    const type  = key.slice(sep + 2);
-    if (!byDoc[docId]) byDoc[docId] = {};
-    byDoc[docId][type] = catCounts[key];
+  const entities = Object.keys(structureTree).sort((a, b) =>
+    displayEntityName(a).localeCompare(displayEntityName(b), "de", { sensitivity: "base" })
+  );
+
+  if (!entities.length) {
+    list.innerHTML = '<div style="padding:14px;color:#94A3B8;font-size:12px;line-height:1.5">Keine IFC-Elemente geladen.</div>';
+    return;
   }
 
-  for (const docId of Object.keys(byDoc)) {
-    const meta = docMeta[docId] || {};
-    const col  = meta.color || "#1E6FBF";
-    const lbl  = meta.label || docId.slice(0, 12);
+  const multipleDocs = Object.keys(modelMeshes).length > 1;
 
-    // ── Ebene 1: Datei-Header ──────────────────────────────────────────────
-    const fileHeader = document.createElement("div");
-    fileHeader.style.cssText = `
-      padding:7px 12px;background:linear-gradient(135deg,${col}18,${col}08);
-      border-bottom:1px solid ${col}22;border-top:1px solid ${col}22;
-      display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;
-      flex-shrink:0;position:sticky;top:0;z-index:2;margin-top:2px`;
-    fileHeader.innerHTML =
-      `<span class="ftog" style="color:${col};font-size:9px;width:10px;flex-shrink:0;transition:transform 0.15s">▼</span>` +
-      `<span style="width:10px;height:10px;border-radius:3px;background:${col};flex-shrink:0"></span>` +
-      `<span style="font-size:11px;font-weight:700;color:#0D1B2A;flex:1;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap" title="${esc(lbl)}">${esc(lbl)}</span>` +
-      `<span style="font-size:9px;color:${col};font-weight:600;background:${col}18;
-        padding:1px 6px;border-radius:10px;flex-shrink:0">${Object.values(byDoc[docId]).reduce((a,b)=>a+b,0)}</span>`;
-    list.appendChild(fileHeader);
+  for (const entity of entities) {
+    const typeGroups = structureTree[entity] || {};
+    const typeNames = Object.keys(typeGroups).sort((a, b) =>
+      displayTypeName(a).localeCompare(displayTypeName(b), "de", { sensitivity: "base" })
+    );
+    if (!typeNames.length) continue;
 
-    // Typen nach Gruppe sortieren
-    const groupedTypes = {};
-    for (const type of Object.keys(byDoc[docId]).sort()) {
-      const style = getTypeStyle(type);
-      const grp = style.group || 'Sonstiges';
-      if (!groupedTypes[grp]) groupedTypes[grp] = [];
-      groupedTypes[grp].push(type);
+    if (entityVisible[entity] === undefined) entityVisible[entity] = true;
+    for (const typeName of typeNames) {
+      const k = typeKey(entity, typeName);
+      if (typeVisible[k] === undefined) typeVisible[k] = true;
     }
 
-    const docBody = document.createElement("div");
-    docBody.style.cssText = "padding:4px 0 6px";
+    const style = getTypeStyle(entity);
+    const colorHex = style.colorHex || ("#" + new THREE.Color(style.color).getHexString()).toUpperCase();
+    const count = entityElementCount(entity);
+    const allTypesOn = typeNames.every(typeName => typeVisible[typeKey(entity, typeName)] !== false);
+    const anyTypesOn = typeNames.some(typeName => typeVisible[typeKey(entity, typeName)] !== false);
+    const entityOn = entityVisible[entity] !== false && anyTypesOn;
 
-    for (const groupName of Object.keys(groupedTypes).sort()) {
-      const typesInGroup = groupedTypes[groupName];
+    const category = document.createElement("div");
+    category.style.cssText = `
+      border-bottom:1px solid #E2E8F0;background:#FFFFFF;flex-shrink:0`;
 
-      // ── Ebene 2: Gruppen-Header ────────────────────────────────────────
-      const groupHeader = document.createElement("div");
-      groupHeader.style.cssText = `
-        padding:5px 12px 3px 22px;font-size:9px;font-weight:700;
-        color:#94A3B8;text-transform:uppercase;letter-spacing:.7px;
-        display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;
-        margin-top:4px`;
+    // Ebene 1: IFC-Entity, ohne "Ifc"-Prefix in der UI
+    const categoryHeader = document.createElement("div");
+    categoryHeader.style.cssText = `
+      display:flex;align-items:center;gap:7px;padding:8px 10px 8px 12px;
+      cursor:pointer;user-select:none;border-left:4px solid ${colorHex};
+      background:linear-gradient(90deg,${colorWithAlpha(colorHex, "14")},#FFFFFF 60%);
+      opacity:${entityOn ? "1" : ".45"}`;
+    categoryHeader.innerHTML =
+      `<span class="etog" style="font-size:9px;color:${colorHex};width:10px;flex-shrink:0;transition:transform .15s">▼</span>` +
+      `<input class="entity-cb" type="checkbox" ${entityOn ? "checked" : ""}
+          data-entity="${esc(entity)}"
+          style="width:13px;height:13px;accent-color:${colorHex};flex-shrink:0;cursor:pointer">` +
+      `<span style="width:12px;height:12px;border-radius:50%;background:${colorHex};
+          box-shadow:0 0 0 3px ${colorWithAlpha(colorHex, "22")};flex-shrink:0"></span>` +
+      `<span style="font-size:12px;font-weight:750;color:#0D1B2A;flex:1;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(entity)}">
+          ${esc(displayEntityName(entity))}</span>` +
+      `<span style="font-size:10px;color:${colorHex};font-weight:700;background:${colorWithAlpha(colorHex, "16")};
+          padding:1px 6px;border-radius:10px;flex-shrink:0">${count}</span>` +
+      `<label title="Farbe für ${esc(displayEntityName(entity))} ändern" style="display:flex;align-items:center;gap:4px;
+          font-size:9px;color:#64748B;cursor:pointer;flex-shrink:0">
+          <input class="entity-color" type="color" data-entity="${esc(entity)}" value="${colorHex}"
+            style="width:22px;height:20px;border:0;background:transparent;padding:0;cursor:pointer">
+        </label>`;
+    category.appendChild(categoryHeader);
 
-      const groupIcon = _getGroupIcon(groupName);
-      groupHeader.innerHTML =
-        `<span class="gtog" style="font-size:8px;color:#CBD5E1;transition:transform 0.15s">▼</span>` +
-        `<span>${groupIcon}</span>` +
-        `<span style="flex:1">${esc(groupName)}</span>` +
-        `<span style="font-size:9px;color:#CBD5E1;font-weight:500">
-          ${typesInGroup.reduce((a,t)=>a+byDoc[docId][t],0)}
-        </span>`;
-      docBody.appendChild(groupHeader);
+    const entityCb = categoryHeader.querySelector(".entity-cb");
+    if (entityCb) entityCb.indeterminate = entityOn && !allTypesOn;
 
-      const groupBody = document.createElement("div");
-      groupBody.style.cssText = "padding:0";
+    const categoryBody = document.createElement("div");
+    categoryBody.style.cssText = "padding:3px 0 7px;background:#FFFFFF";
 
-      for (const type of typesInGroup) {
-        const key    = catKey(docId, type);
-        const vis    = catVisible[key] !== false;
-        const style  = getTypeStyle(type);
-        const tColHex = "#" + new THREE.Color(style.color).getHexString();
-        const count  = byDoc[docId][type];
-        const isFlat = FLAT_TYPES.has(type);
-        const elems  = catElements[key] || [];
+    for (const typeName of typeNames) {
+      const elements = typeGroups[typeName] || [];
+      const k = typeKey(entity, typeName);
+      const vis = entityVisible[entity] !== false && typeVisible[k] !== false;
+      const isFlat = FLAT_TYPES.has(entity);
 
-        // ── Ebene 3: Typ-Zeile ───────────────────────────────────────────
-        const typeRow = document.createElement("div");
-        typeRow.style.cssText = `
-          display:flex;align-items:center;gap:6px;padding:4px 10px 4px 28px;
-          cursor:pointer;border-bottom:1px solid #F1F5F9;
-          opacity:${vis ? "1" : ".4"};transition:all 0.12s;user-select:none`;
-        typeRow.dataset.catKey = key;
+      // Ebene 2: Element-Typ / Typname
+      const typeRow = document.createElement("div");
+      typeRow.style.cssText = `
+        display:flex;align-items:center;gap:6px;padding:5px 10px 5px 30px;
+        cursor:pointer;border-bottom:1px solid #F1F5F9;user-select:none;
+        opacity:${vis ? "1" : ".45"};transition:all .12s`;
+      typeRow.dataset.entity = entity;
+      typeRow.dataset.typeName = typeName;
+      typeRow.innerHTML =
+        `<span class="ttog" style="font-size:8px;color:#CBD5E1;width:9px;flex-shrink:0">▶</span>` +
+        `<input class="type-cb" type="checkbox" ${vis ? "checked" : ""}
+            data-entity="${esc(entity)}" data-type-name="${esc(typeName)}"
+            style="width:12px;height:12px;accent-color:${colorHex};flex-shrink:0;cursor:pointer">` +
+        `<span style="width:10px;height:10px;border-radius:${isFlat ? "0" : "3px"};
+            background:${isFlat ? "transparent" : colorHex};
+            border:${isFlat ? "1.5px dashed #CBD5E1" : "2px solid " + colorWithAlpha(colorHex, "33")};
+            flex-shrink:0;display:inline-block"></span>` +
+        `<span style="font-size:11px;color:#1E293B;flex:1;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap;font-weight:600" title="${esc(typeName)}">${esc(displayTypeName(typeName))}</span>` +
+        `<span style="font-size:10px;color:#94A3B8;flex-shrink:0;background:#F1F5F9;
+            padding:1px 5px;border-radius:8px">${elements.length}</span>`;
+      categoryBody.appendChild(typeRow);
 
-        const shortName = type.replace(/^Ifc/, '');
-        typeRow.innerHTML =
-          `<span class="ttog" style="font-size:8px;color:#CBD5E1;width:8px;flex-shrink:0">▶</span>` +
-          `<input class="cat-cb" type="checkbox" ${vis ? "checked" : ""}
-             data-cat-key="${esc(key)}"
-             style="width:12px;height:12px;accent-color:${tColHex};flex-shrink:0;cursor:pointer">` +
-          `<span style="width:10px;height:10px;border-radius:${isFlat ? '0' : '50%'};
-             background:${isFlat ? 'transparent' : tColHex};
-             border:${isFlat ? '1.5px dashed #CBD5E1' : '2px solid ' + tColHex + '33'};
-             flex-shrink:0;display:inline-block"></span>` +
-          `<span style="font-size:11px;color:${isFlat ? '#94A3B8' : '#1E293B'};
-             flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500"
-             title="Ifc${esc(shortName)}">${esc(shortName)}</span>` +
-          `<span style="font-size:10px;color:#94A3B8;flex-shrink:0;
-             background:#F1F5F9;padding:1px 5px;border-radius:8px">${count}</span>`;
+      // Ebene 3: Elementname
+      const elemList = document.createElement("div");
+      elemList.style.cssText = "display:none;padding:0;background:#FAFBFD;border-bottom:1px solid #E2E8F0";
 
-        groupBody.appendChild(typeRow);
-
-        // ── Ebene 4: Element-Liste (eingeklappt) ─────────────────────────
-        const elemList = document.createElement("div");
-        elemList.style.display = "none";
-        elemList.style.cssText += "padding:0;background:#FAFBFD;border-bottom:1px solid #E2E8F0";
-
-        for (const el of elems.slice(0, 100)) {
-          const eRow = document.createElement("div");
-          eRow.style.cssText = `
-            padding:3px 10px 3px 44px;font-size:10px;color:#475569;
-            cursor:pointer;border-bottom:1px solid #F1F5F9;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-            display:flex;align-items:center;gap:5px`;
-          eRow.title = (el.name || el.ifcType) + (el.globalId ? ' · ' + el.globalId : '');
-          eRow.dataset.expressId = el.expressId;
-          eRow.innerHTML =
-            `<span style="color:${tColHex};font-size:8px;flex-shrink:0">${style.icon || '◆'}</span>` +
-            `<span style="overflow:hidden;text-overflow:ellipsis">${esc(el.name || '(Kein Name)')}</span>`;
-          eRow.addEventListener("mouseenter", () => eRow.style.background = "#EFF6FF");
-          eRow.addEventListener("mouseleave", () => eRow.style.background = "");
-          eRow.addEventListener("click", e => {
-            e.stopPropagation();
-            const target = allMeshes().find(m => m.userData.expressId === el.expressId);
-            if (target) {
-              if (!target.visible) target.visible = true;
-              selectMesh(target);
-              const box = new THREE.Box3().setFromObject(target);
-              if (!box.isEmpty()) {
-                orb.tgt.copy(box.getCenter(new THREE.Vector3()));
-                orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.8, 2);
-                applyOrb();
-              }
+      for (const el of elements.slice(0, 150)) {
+        const eRow = document.createElement("div");
+        eRow.style.cssText = `
+          padding:4px 10px 4px 52px;font-size:10px;color:#475569;
+          cursor:pointer;border-bottom:1px solid #F1F5F9;white-space:nowrap;
+          overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px`;
+        eRow.title = (el.name || displayEntityName(entity)) + (el.globalId ? " · " + el.globalId : "") + (el.modelLabel ? " · " + el.modelLabel : "");
+        eRow.dataset.expressId = el.expressId;
+        eRow.dataset.docId = el.docId;
+        eRow.innerHTML =
+          `<span style="width:7px;height:7px;border-radius:50%;background:${colorHex};flex-shrink:0"></span>` +
+          `<span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(el.name || "(Kein Name)")}</span>` +
+          (multipleDocs ? `<span style="font-size:9px;color:${esc(el.slotColor || "#64748B")};flex-shrink:0;max-width:90px;
+            overflow:hidden;text-overflow:ellipsis" title="${esc(el.modelLabel || "")}">${esc(el.modelLabel || "")}</span>` : "");
+        eRow.addEventListener("mouseenter", () => eRow.style.background = "#EFF6FF");
+        eRow.addEventListener("mouseleave", () => eRow.style.background = "");
+        eRow.addEventListener("click", e => {
+          e.stopPropagation();
+          const target = allMeshes().find(m => m.userData.expressId === el.expressId && m.userData.docId === el.docId);
+          if (target) {
+            if (!target.visible) {
+              entityVisible[entity] = true;
+              typeVisible[typeKey(entity, typeName)] = true;
+              hiddenIds.delete(meshInstanceKey(target));
+              applyVisibility();
             }
-          });
-          elemList.appendChild(eRow);
-        }
-        if (elems.length > 100) {
-          const moreRow = document.createElement("div");
-          moreRow.style.cssText = "padding:4px 44px;font-size:10px;color:#94A3B8;font-style:italic";
-          moreRow.textContent = `… ${elems.length - 100} weitere Elemente`;
-          elemList.appendChild(moreRow);
-        }
-        groupBody.appendChild(elemList);
-
-        // Typ-Zeile: Auf-/Zuklappen der Element-Liste
-        typeRow.addEventListener("click", e => {
-          if (e.target.classList.contains("cat-cb")) return;
-          const tog = typeRow.querySelector(".ttog");
-          const collapsed = elemList.style.display === "none";
-          elemList.style.display = collapsed ? "block" : "none";
-          tog.style.color = collapsed ? "#64748B" : "#CBD5E1";
-          tog.textContent = collapsed ? "▼" : "▶";
-          typeRow.style.background = collapsed ? "#F0F7FF" : "";
+            selectMesh(target);
+            const box = new THREE.Box3().setFromObject(target);
+            if (!box.isEmpty()) {
+              orb.tgt.copy(box.getCenter(new THREE.Vector3()));
+              orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.8, 2);
+              applyOrb();
+            }
+          }
         });
-
-        // Hover
-        typeRow.addEventListener("mouseenter", () => {
-          if (elemList.style.display === "none") typeRow.style.background = "#F8FAFC";
-        });
-        typeRow.addEventListener("mouseleave", () => {
-          if (elemList.style.display === "none") typeRow.style.background = "";
-        });
+        elemList.appendChild(eRow);
       }
 
-      docBody.appendChild(groupBody);
+      if (elements.length > 150) {
+        const moreRow = document.createElement("div");
+        moreRow.style.cssText = "padding:5px 52px;font-size:10px;color:#94A3B8;font-style:italic";
+        moreRow.textContent = `… ${elements.length - 150} weitere Elemente`;
+        elemList.appendChild(moreRow);
+      }
+      categoryBody.appendChild(elemList);
 
-      // Gruppen-Header: Auf-/Zuklappen
-      groupHeader.addEventListener("click", () => {
-        const tog = groupHeader.querySelector(".gtog");
-        const collapsed = groupBody.style.display === "none";
-        groupBody.style.display = collapsed ? "" : "none";
-        tog.style.transform = collapsed ? "" : "rotate(-90deg)";
+      typeRow.addEventListener("click", e => {
+        if (e.target.closest("input")) return;
+        const tog = typeRow.querySelector(".ttog");
+        const collapsed = elemList.style.display === "none";
+        elemList.style.display = collapsed ? "block" : "none";
+        tog.style.color = collapsed ? "#64748B" : "#CBD5E1";
+        tog.textContent = collapsed ? "▼" : "▶";
+        typeRow.style.background = collapsed ? "#F0F7FF" : "";
+      });
+      typeRow.addEventListener("mouseenter", () => {
+        if (elemList.style.display === "none") typeRow.style.background = "#F8FAFC";
+      });
+      typeRow.addEventListener("mouseleave", () => {
+        if (elemList.style.display === "none") typeRow.style.background = "";
       });
     }
 
-    list.appendChild(docBody);
+    category.appendChild(categoryBody);
+    list.appendChild(category);
 
-    // Datei-Header: Auf-/Zuklappen
-    fileHeader.addEventListener("click", () => {
-      const tog = fileHeader.querySelector(".ftog");
-      const collapsed = docBody.style.display === "none";
-      docBody.style.display = collapsed ? "" : "none";
+    categoryHeader.addEventListener("click", e => {
+      if (e.target.closest("input,label")) return;
+      const tog = categoryHeader.querySelector(".etog");
+      const collapsed = categoryBody.style.display === "none";
+      categoryBody.style.display = collapsed ? "" : "none";
       tog.style.transform = collapsed ? "" : "rotate(-90deg)";
     });
   }
 
-  // Checkbox-Delegation
-  list.addEventListener("change", e => {
-    if (!e.target.classList.contains("cat-cb")) return;
-    const key = e.target.dataset.catKey;
-    catVisible[key] = e.target.checked;
-    const row = e.target.closest("[data-cat-key]");
-    if (row) row.style.opacity = e.target.checked ? "1" : ".4";
-    applyVisibility();
-  });
-}
-
-function _getGroupIcon(group) {
-  const icons = {
-    'Tragwerk': '🏗', 'Hülle': '🏠', 'Öffnungen': '🚪',
-    'Erschließung': '🔼', 'Ausbau': '🪑', 'TGA': '⚙',
-    'Sonstiges': '📦',
+  list.onchange = e => {
+    const target = e.target;
+    if (target.classList.contains("entity-color")) {
+      e.stopPropagation();
+      setCategoryColor(target.dataset.entity, target.value);
+      buildCategoryUI();
+      return;
+    }
+    if (target.classList.contains("entity-cb")) {
+      const entity = target.dataset.entity;
+      const checked = target.checked;
+      entityVisible[entity] = checked;
+      for (const typeName of Object.keys(structureTree[entity] || {})) {
+        typeVisible[typeKey(entity, typeName)] = checked;
+      }
+      buildCategoryUI();
+      applyVisibility();
+      return;
+    }
+    if (target.classList.contains("type-cb")) {
+      const entity = target.dataset.entity;
+      const typeName = target.dataset.typeName || "Ohne Typ";
+      typeVisible[typeKey(entity, typeName)] = target.checked;
+      const typeNames = Object.keys(structureTree[entity] || {});
+      entityVisible[entity] = typeNames.some(t => typeVisible[typeKey(entity, t)] !== false);
+      buildCategoryUI();
+      applyVisibility();
+    }
   };
-  return icons[group] || '📦';
 }
 
 function setCatAll(v) {
-  Object.keys(catCounts).forEach(k => catVisible[k] = v);
+  for (const entity of Object.keys(structureTree)) {
+    entityVisible[entity] = v;
+    for (const typeName of Object.keys(structureTree[entity] || {})) {
+      typeVisible[typeKey(entity, typeName)] = v;
+    }
+  }
   buildCategoryUI();
   applyVisibility();
 }
@@ -976,19 +1063,43 @@ async function loadModel(cfg, index, total) {
     return String(v);
   }
 
-  // RelDefinesByProperties → PSets
+  // RelDefinesByProperties -> PSets, RelDefinesByType -> Typnamen
   const relMap = {};
+  const typeRelMap = {};
   for (const [id, line] of Object.entries(elemIndex)) {
-    if (!typeName(line).toLowerCase().includes("reldefinesbyprop")) continue;
-    const pref = line.RelatingPropertyDefinition; if (!pref) continue;
-    const pid  = pref.value ?? pref;
-    const rels = line.RelatedObjects; if (!rels) continue;
-    const ids  = Array.isArray(rels) ? rels : [rels];
-    for (const r of ids) {
-      const rid = r?.value ?? r;
-      if (!relMap[rid]) relMap[rid] = [];
-      relMap[rid].push(pid);
+    const relType = typeName(line).toLowerCase();
+
+    if (relType.includes("reldefinesbyprop")) {
+      const pref = line.RelatingPropertyDefinition; if (!pref) continue;
+      const pid  = pref.value ?? pref;
+      const rels = line.RelatedObjects; if (!rels) continue;
+      const ids  = Array.isArray(rels) ? rels : [rels];
+      for (const r of ids) {
+        const rid = r?.value ?? r;
+        if (!relMap[rid]) relMap[rid] = [];
+        relMap[rid].push(pid);
+      }
     }
+
+    if (relType.includes("reldefinesbytype")) {
+      const tref = line.RelatingType; if (!tref) continue;
+      const tid  = tref.value ?? tref;
+      const rels = line.RelatedObjects; if (!rels) continue;
+      const ids  = Array.isArray(rels) ? rels : [rels];
+      for (const r of ids) {
+        const rid = r?.value ?? r;
+        typeRelMap[rid] = tid;
+      }
+    }
+  }
+
+  function resolveElementTypeName(eid, line) {
+    const typeLine = elemIndex[typeRelMap[eid]];
+    const typeNameFromRel = sv(typeLine?.Name) || sv(typeLine?.ElementType) || sv(typeLine?.ObjectType);
+    const ownType = sv(line?.ObjectType) || sv(line?.ElementType);
+    const predefined = sv(line?.PredefinedType);
+    const usefulPredefined = predefined && !/^([0-9]+|NOTDEFINED|UNDEFINED)$/i.test(predefined) ? predefined : "";
+    return typeNameFromRel || ownType || usefulPredefined || "Ohne Typ";
   }
 
   function getPsets(eid) {
@@ -1027,26 +1138,32 @@ async function loadModel(cfg, index, total) {
     const expId = fm.expressID;
     const line = elemIndex[expId];
     const tName = typeName(line);
+    const elementTypeName = resolveElementTypeName(expId, line);
     const typeStyle = getTypeStyle(tName);
     const isFlat = FLAT_TYPES.has(tName);
-    const tCol = isFlat ? new THREE.Color(0xcccccc) : new THREE.Color(typeStyle.color);
-    const key = catKey(docId, tName);
+    const tCol = new THREE.Color(typeStyle.color);
 
     if (!seen.has(expId)) {
       seen.add(expId);
-      catCounts[key] = (catCounts[key] ?? 0) + 1;
-      if (catVisible[key] === undefined) catVisible[key] = !isFlat;
-      if (!catElements[key]) catElements[key] = [];
-      catElements[key].push({
+      if (!structureTree[tName]) structureTree[tName] = {};
+      if (!structureTree[tName][elementTypeName]) structureTree[tName][elementTypeName] = [];
+      if (entityVisible[tName] === undefined) entityVisible[tName] = !isFlat;
+      const k = typeKey(tName, elementTypeName);
+      if (typeVisible[k] === undefined) typeVisible[k] = !isFlat;
+      structureTree[tName][elementTypeName].push({
         name: sv(line?.Name) || sv(line?.GlobalId) || String(expId),
         expressId: expId,
         globalId: sv(line?.GlobalId),
-        ifcType: tName,
+        ifcEntity: tName,
+        typeName: elementTypeName,
+        docId: docId,
+        modelLabel: cfg.label,
+        slotColor: cfg.color,
       });
     }
 
     const meta = {
-      expressId: expId, ifcType: tName,
+      expressId: expId, ifcType: tName, typeName: elementTypeName,
       name: sv(line?.Name), globalId: sv(line?.GlobalId),
       objectType: sv(line?.ObjectType), description: sv(line?.Description),
       tag: sv(line?.Tag), docId: docId, modelLabel: cfg.label,
@@ -1080,8 +1197,8 @@ async function loadModel(cfg, index, total) {
       geo.setIndex(new THREE.BufferAttribute(idx, 1));
       const mesh = new THREE.Mesh(geo, mat.clone());
       mesh.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation));
-      mesh.userData = { ...meta };
-      mesh.visible = !isFlat;
+      mesh.userData = { ...meta, _baseColor: tCol.clone(), _origColor: tCol.clone() };
+      mesh.visible = isStructureTypeVisible(tName, elementTypeName);
       group.add(mesh);
       modelMeshes[docId].push(mesh);
       vertCount += pa.length / 3;
@@ -1144,6 +1261,7 @@ function showInfo(m) {
     ["GlobalId",   d.globalId],
     ["Name",       d.name],
     ["Express-ID", String(d.expressId)],
+    ["Typname",    d.typeName],
     ["ObjectType", d.objectType],
   ];
   for (const [label, value] of fields) {
@@ -1233,9 +1351,9 @@ function selectMesh(m) {
 window.addEventListener("keydown", e => {
   if (e.code !== "Space" || !selectedMesh) return;
   e.preventDefault();
-  const id = selectedMesh.userData.expressId;
+  const id = meshInstanceKey(selectedMesh);
   hiddenIds.add(id);
-  for (const m of allMeshes()) if (m.userData.expressId === id) m.visible = false;
+  selectedMesh.visible = false;
   selectedMesh.material.color.copy(selectedMesh.userData._origColor);
   selectedMesh = null;
   infoBody.innerHTML = '<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0">Element ausgeblendet.</div>';
