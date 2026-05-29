@@ -726,28 +726,57 @@ canvas.addEventListener("wheel", e => {
 // ═══════════════════════════════════════════════════════════════════════════
 const modelMeshes = {};   // docId → Mesh[]
 const modelGroups = {};   // docId → THREE.Group
-const structureTree = {}; // IfcEntity → Typname → [{name, expressId, globalId, docId}]
-const entityVisible = {}; // IfcEntity → bool
-const typeVisible   = {}; // "IfcEntity::Typname" → bool
+const structureTree = {}; // docId → {label, color, entities: {IfcEntity → Typname → [{name, expressId, globalId, docId}]}}
+const modelVisible = {};  // docId → bool
+const entityVisible = {}; // "docId::IfcEntity" → bool
+const typeVisible   = {}; // "docId::IfcEntity::Typname" → bool
 const hiddenIds     = new Set(); // "docId::expressId"
 const docMeta       = {};   // docId → {label, color}
 
-function typeKey(entity, typeName) { return entity + "::" + (typeName || "Ohne Typ"); }
+function modelKey(docId) { return String(docId ?? ""); }
+function entityKey(docId, entity) { return modelKey(docId) + "::" + (entity || "IfcElement"); }
+function typeKey(docId, entity, typeName) { return entityKey(docId, entity) + "::" + (typeName || "Ohne Typ"); }
 function meshInstanceKey(m) { return (m?.userData?.docId || "") + "::" + (m?.userData?.expressId ?? ""); }
 function allMeshes() { return Object.values(modelMeshes).flat(); }
 function displayEntityName(entity) { return String(entity || "Unknown").replace(/^Ifc/, "") || "Unknown"; }
 function displayTypeName(typeName) { return String(typeName || "Ohne Typ").replace(/^Ifc/, "") || "Ohne Typ"; }
-function entityElementCount(entity) {
-  return Object.values(structureTree[entity] || {}).reduce((sum, list) => sum + list.length, 0);
+function getModelNode(docId) {
+  const key = modelKey(docId);
+  return structureTree[key] || { label: docMeta[key]?.label || `Modell ${key}`, color: docMeta[key]?.color || "#64748B", entities: {} };
 }
-function isStructureTypeVisible(entity, typeName) {
-  return entityVisible[entity] !== false && typeVisible[typeKey(entity, typeName)] !== false;
+function modelEntities(docId) { return getModelNode(docId).entities || {}; }
+function modelLabel(docId) { return getModelNode(docId).label || `Modell ${modelKey(docId)}`; }
+function modelColor(docId) {
+  const node = getModelNode(docId);
+  return normalizeHexColor(node.color || docMeta[modelKey(docId)]?.color) || "#64748B";
+}
+function entityElementCount(docId, entity) {
+  return Object.values(modelEntities(docId)[entity] || {}).reduce((sum, list) => sum + list.length, 0);
+}
+function modelElementCount(docId) {
+  const entities = modelEntities(docId);
+  return Object.keys(entities).reduce((sum, entity) => sum + entityElementCount(docId, entity), 0);
+}
+function entityTypeNames(docId, entity) { return Object.keys(modelEntities(docId)[entity] || {}); }
+function entityHasAnyTypeOn(docId, entity) {
+  return entityTypeNames(docId, entity).some(typeName => typeVisible[typeKey(docId, entity, typeName)] !== false);
+}
+function entityIsOn(docId, entity) {
+  return entityVisible[entityKey(docId, entity)] !== false && entityHasAnyTypeOn(docId, entity);
+}
+function modelHasAnyVisibleChild(docId) {
+  return Object.keys(modelEntities(docId)).some(entity => entityIsOn(docId, entity));
+}
+function isStructureTypeVisible(docId, entity, typeName) {
+  return modelVisible[modelKey(docId)] !== false &&
+    entityVisible[entityKey(docId, entity)] !== false &&
+    typeVisible[typeKey(docId, entity, typeName)] !== false;
 }
 
 // ── Sichtbarkeit ────────────────────────────────────────────────────────────
 function applyVisibility() {
   for (const m of allMeshes()) {
-    const catOn = isStructureTypeVisible(m.userData.ifcType, m.userData.typeName || "Ohne Typ");
+    const catOn = isStructureTypeVisible(m.userData.docId, m.userData.ifcType, m.userData.typeName || "Ohne Typ");
     const notHidden = !hiddenIds.has(meshInstanceKey(m));
     m.visible = catOn && notHidden;
   }
@@ -769,184 +798,247 @@ function updateHiddenCount() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// IFC-Struktur-Baum (IFC-Entity → Typname → Elementname)
+// IFC-Struktur-Baum (Modell → IFC-Entity → Typname → Elementname)
 // ═══════════════════════════════════════════════════════════════════════════
 function buildCategoryUI() {
   const list = document.getElementById("cat-scroll");
   if (!list) return;
   list.innerHTML = "";
 
-  const entities = Object.keys(structureTree).sort((a, b) =>
-    displayEntityName(a).localeCompare(displayEntityName(b), "de", { sensitivity: "base" })
-  );
+  const modelIds = Object.keys(structureTree)
+    .filter(docId => Object.keys(modelEntities(docId)).length)
+    .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b), "de", { sensitivity: "base" }));
 
-  if (!entities.length) {
+  if (!modelIds.length) {
     list.innerHTML = '<div style="padding:14px;color:#94A3B8;font-size:12px;line-height:1.5">Keine IFC-Elemente geladen.</div>';
     return;
   }
 
-  const multipleDocs = Object.keys(modelMeshes).length > 1;
-
-  for (const entity of entities) {
-    const typeGroups = structureTree[entity] || {};
-    const typeNames = Object.keys(typeGroups).sort((a, b) =>
-      displayTypeName(a).localeCompare(displayTypeName(b), "de", { sensitivity: "base" })
+  for (const docId of modelIds) {
+    const entitiesMap = modelEntities(docId);
+    const entities = Object.keys(entitiesMap).sort((a, b) =>
+      displayEntityName(a).localeCompare(displayEntityName(b), "de", { sensitivity: "base" })
     );
-    if (!typeNames.length) continue;
+    if (!entities.length) continue;
 
-    if (entityVisible[entity] === undefined) entityVisible[entity] = true;
-    for (const typeName of typeNames) {
-      const k = typeKey(entity, typeName);
-      if (typeVisible[k] === undefined) typeVisible[k] = true;
-    }
+    if (modelVisible[modelKey(docId)] === undefined) modelVisible[modelKey(docId)] = true;
 
-    const style = getTypeStyle(entity);
-    const colorHex = style.colorHex || ("#" + new THREE.Color(style.color).getHexString()).toUpperCase();
-    const count = entityElementCount(entity);
-    const allTypesOn = typeNames.every(typeName => typeVisible[typeKey(entity, typeName)] !== false);
-    const anyTypesOn = typeNames.some(typeName => typeVisible[typeKey(entity, typeName)] !== false);
-    const entityOn = entityVisible[entity] !== false && anyTypesOn;
-
-    const category = document.createElement("div");
-    category.style.cssText = `
-      border-bottom:1px solid #E2E8F0;background:#FFFFFF;flex-shrink:0`;
-
-    // Ebene 1: IFC-Entity, ohne "Ifc"-Prefix in der UI
-    const categoryHeader = document.createElement("div");
-    categoryHeader.style.cssText = `
-      display:flex;align-items:center;gap:7px;padding:8px 10px 8px 12px;
-      cursor:pointer;user-select:none;border-left:4px solid ${colorHex};
-      background:linear-gradient(90deg,${colorWithAlpha(colorHex, "14")},#FFFFFF 60%);
-      opacity:${entityOn ? "1" : ".45"}`;
-    categoryHeader.innerHTML =
-      `<span class="etog" style="font-size:9px;color:${colorHex};width:10px;flex-shrink:0;transition:transform .15s">▼</span>` +
-      `<input class="entity-cb" type="checkbox" ${entityOn ? "checked" : ""}
-          data-entity="${esc(entity)}"
-          style="width:13px;height:13px;accent-color:${colorHex};flex-shrink:0;cursor:pointer">` +
-      `<span style="width:12px;height:12px;border-radius:50%;background:${colorHex};
-          box-shadow:0 0 0 3px ${colorWithAlpha(colorHex, "22")};flex-shrink:0"></span>` +
-      `<span style="font-size:12px;font-weight:750;color:#0D1B2A;flex:1;
-          overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(entity)}">
-          ${esc(displayEntityName(entity))}</span>` +
-      `<span style="font-size:10px;color:${colorHex};font-weight:700;background:${colorWithAlpha(colorHex, "16")};
-          padding:1px 6px;border-radius:10px;flex-shrink:0">${count}</span>` +
-      `<label title="Farbe für ${esc(displayEntityName(entity))} ändern" style="display:flex;align-items:center;gap:4px;
-          font-size:9px;color:#64748B;cursor:pointer;flex-shrink:0">
-          <input class="entity-color" type="color" data-entity="${esc(entity)}" value="${colorHex}"
-            style="width:22px;height:20px;border:0;background:transparent;padding:0;cursor:pointer">
-        </label>`;
-    category.appendChild(categoryHeader);
-
-    const entityCb = categoryHeader.querySelector(".entity-cb");
-    if (entityCb) entityCb.indeterminate = entityOn && !allTypesOn;
-
-    const categoryBody = document.createElement("div");
-    categoryBody.style.cssText = "padding:3px 0 7px;background:#FFFFFF";
-
-    for (const typeName of typeNames) {
-      const elements = typeGroups[typeName] || [];
-      const k = typeKey(entity, typeName);
-      const vis = entityVisible[entity] !== false && typeVisible[k] !== false;
+    for (const entity of entities) {
+      const typeNames = entityTypeNames(docId, entity);
       const isFlat = FLAT_TYPES.has(entity);
+      const eKey = entityKey(docId, entity);
+      if (entityVisible[eKey] === undefined) entityVisible[eKey] = !isFlat;
+      for (const typeName of typeNames) {
+        const k = typeKey(docId, entity, typeName);
+        if (typeVisible[k] === undefined) typeVisible[k] = !isFlat;
+      }
+    }
 
-      // Ebene 2: Element-Typ / Typname
-      const typeRow = document.createElement("div");
-      typeRow.style.cssText = `
-        display:flex;align-items:center;gap:6px;padding:5px 10px 5px 30px;
-        cursor:pointer;border-bottom:1px solid #F1F5F9;user-select:none;
-        opacity:${vis ? "1" : ".45"};transition:all .12s`;
-      typeRow.dataset.entity = entity;
-      typeRow.dataset.typeName = typeName;
-      typeRow.innerHTML =
-        `<span class="ttog" style="font-size:8px;color:#CBD5E1;width:9px;flex-shrink:0">▶</span>` +
-        `<input class="type-cb" type="checkbox" ${vis ? "checked" : ""}
-            data-entity="${esc(entity)}" data-type-name="${esc(typeName)}"
-            style="width:12px;height:12px;accent-color:${colorHex};flex-shrink:0;cursor:pointer">` +
-        `<span style="width:10px;height:10px;border-radius:${isFlat ? "0" : "3px"};
-            background:${isFlat ? "transparent" : colorHex};
-            border:${isFlat ? "1.5px dashed #CBD5E1" : "2px solid " + colorWithAlpha(colorHex, "33")};
-            flex-shrink:0;display:inline-block"></span>` +
-        `<span style="font-size:11px;color:#1E293B;flex:1;overflow:hidden;text-overflow:ellipsis;
-            white-space:nowrap;font-weight:600" title="${esc(typeName)}">${esc(displayTypeName(typeName))}</span>` +
-        `<span style="font-size:10px;color:#94A3B8;flex-shrink:0;background:#F1F5F9;
-            padding:1px 5px;border-radius:8px">${elements.length}</span>`;
-      categoryBody.appendChild(typeRow);
+    const mColor = modelColor(docId);
+    const mCount = modelElementCount(docId);
+    const mOn = modelVisible[modelKey(docId)] !== false && modelHasAnyVisibleChild(docId);
+    const mAllOn = entities.every(entity => {
+      const typeNames = entityTypeNames(docId, entity);
+      return entityVisible[entityKey(docId, entity)] !== false &&
+        typeNames.every(typeName => typeVisible[typeKey(docId, entity, typeName)] !== false);
+    });
 
-      // Ebene 3: Elementname
-      const elemList = document.createElement("div");
-      elemList.style.cssText = "display:none;padding:0;background:#FAFBFD;border-bottom:1px solid #E2E8F0";
+    const modelBlock = document.createElement("div");
+    modelBlock.style.cssText = "border-bottom:1px solid #CBD5E1;background:#FFFFFF;flex-shrink:0";
 
-      for (const el of elements.slice(0, 150)) {
-        const eRow = document.createElement("div");
-        eRow.style.cssText = `
-          padding:4px 10px 4px 52px;font-size:10px;color:#475569;
-          cursor:pointer;border-bottom:1px solid #F1F5F9;white-space:nowrap;
-          overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px`;
-        eRow.title = (el.name || displayEntityName(entity)) + (el.globalId ? " · " + el.globalId : "") + (el.modelLabel ? " · " + el.modelLabel : "");
-        eRow.dataset.expressId = el.expressId;
-        eRow.dataset.docId = el.docId;
-        eRow.innerHTML =
-          `<span style="width:7px;height:7px;border-radius:50%;background:${colorHex};flex-shrink:0"></span>` +
-          `<span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(el.name || "(Kein Name)")}</span>` +
-          (multipleDocs ? `<span style="font-size:9px;color:${esc(el.slotColor || "#64748B")};flex-shrink:0;max-width:90px;
-            overflow:hidden;text-overflow:ellipsis" title="${esc(el.modelLabel || "")}">${esc(el.modelLabel || "")}</span>` : "");
-        eRow.addEventListener("mouseenter", () => eRow.style.background = "#EFF6FF");
-        eRow.addEventListener("mouseleave", () => eRow.style.background = "");
-        eRow.addEventListener("click", e => {
-          e.stopPropagation();
-          const target = allMeshes().find(m => m.userData.expressId === el.expressId && m.userData.docId === el.docId);
-          if (target) {
-            if (!target.visible) {
-              entityVisible[entity] = true;
-              typeVisible[typeKey(entity, typeName)] = true;
-              hiddenIds.delete(meshInstanceKey(target));
-              applyVisibility();
+    // Ebene 1: Modellname
+    const modelHeader = document.createElement("div");
+    modelHeader.style.cssText = `
+      display:flex;align-items:center;gap:6px;padding:5px 8px 5px 9px;
+      cursor:pointer;user-select:none;border-left:3px solid ${mColor};
+      background:linear-gradient(90deg,${colorWithAlpha(mColor, "18")},#F8FAFC 70%);
+      opacity:${mOn ? "1" : ".45"};line-height:1.15`;
+    modelHeader.innerHTML =
+      `<span class="mtog" style="font-size:9px;color:${mColor};width:9px;flex-shrink:0;transition:transform .15s">▼</span>` +
+      `<input class="model-cb" type="checkbox" ${mOn ? "checked" : ""}
+          data-doc-id="${esc(docId)}"
+          style="width:12px;height:12px;accent-color:${mColor};flex-shrink:0;cursor:pointer;margin:0">` +
+      `<span style="width:9px;height:9px;border-radius:50%;background:${mColor};
+          box-shadow:0 0 0 2px ${colorWithAlpha(mColor, "22")};flex-shrink:0"></span>` +
+      `<span style="font-size:11px;font-weight:750;color:#0D1B2A;flex:1;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(modelLabel(docId))}">
+          ${esc(modelLabel(docId))}</span>` +
+      `<span style="font-size:9px;color:${mColor};font-weight:700;background:${colorWithAlpha(mColor, "16")};
+          padding:1px 5px;border-radius:8px;flex-shrink:0">${mCount}</span>`;
+    modelBlock.appendChild(modelHeader);
+
+    const modelCb = modelHeader.querySelector(".model-cb");
+    if (modelCb) modelCb.indeterminate = mOn && !mAllOn;
+
+    const modelBody = document.createElement("div");
+    modelBody.style.cssText = "padding:0;background:#FFFFFF";
+
+    for (const entity of entities) {
+      const typeGroups = entitiesMap[entity] || {};
+      const typeNames = Object.keys(typeGroups).sort((a, b) =>
+        displayTypeName(a).localeCompare(displayTypeName(b), "de", { sensitivity: "base" })
+      );
+      if (!typeNames.length) continue;
+
+      const style = getTypeStyle(entity);
+      const colorHex = style.colorHex || ("#" + new THREE.Color(style.color).getHexString()).toUpperCase();
+      const count = entityElementCount(docId, entity);
+      const eKey = entityKey(docId, entity);
+      const allTypesOn = typeNames.every(typeName => typeVisible[typeKey(docId, entity, typeName)] !== false);
+      const anyTypesOn = typeNames.some(typeName => typeVisible[typeKey(docId, entity, typeName)] !== false);
+      const entityOn = modelVisible[modelKey(docId)] !== false && entityVisible[eKey] !== false && anyTypesOn;
+
+      const category = document.createElement("div");
+      category.style.cssText = "border-bottom:1px solid #EEF2F7;background:#FFFFFF;flex-shrink:0";
+
+      // Ebene 2: IFC-Entity, ohne "Ifc"-Prefix in der UI
+      const categoryHeader = document.createElement("div");
+      categoryHeader.style.cssText = `
+        display:flex;align-items:center;gap:5px;padding:3px 8px 3px 21px;
+        cursor:pointer;user-select:none;border-left:3px solid ${colorHex};
+        background:linear-gradient(90deg,${colorWithAlpha(colorHex, "10")},#FFFFFF 65%);
+        opacity:${entityOn ? "1" : ".45"};line-height:1.1;min-height:22px;box-sizing:border-box`;
+      categoryHeader.innerHTML =
+        `<span class="etog" style="font-size:8px;color:${colorHex};width:8px;flex-shrink:0;transition:transform .15s">▼</span>` +
+        `<input class="entity-cb" type="checkbox" ${entityOn ? "checked" : ""}
+            data-doc-id="${esc(docId)}" data-entity="${esc(entity)}"
+            style="width:11px;height:11px;accent-color:${colorHex};flex-shrink:0;cursor:pointer;margin:0">` +
+        `<span style="width:8px;height:8px;border-radius:50%;background:${colorHex};
+            box-shadow:0 0 0 2px ${colorWithAlpha(colorHex, "22")};flex-shrink:0"></span>` +
+        `<span style="font-size:11px;font-weight:700;color:#0D1B2A;flex:1;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(entity)}">
+            ${esc(displayEntityName(entity))}</span>` +
+        `<span style="font-size:9px;color:${colorHex};font-weight:700;background:${colorWithAlpha(colorHex, "16")};
+            padding:0 5px;border-radius:8px;flex-shrink:0">${count}</span>` +
+        `<label title="Farbe für ${esc(displayEntityName(entity))} ändern" style="display:flex;align-items:center;
+            cursor:pointer;flex-shrink:0;height:16px;line-height:1">
+            <input class="entity-color" type="color" data-entity="${esc(entity)}" value="${colorHex}"
+              style="width:18px;height:16px;min-width:18px;border:0;background:transparent;padding:0;cursor:pointer;margin:0;display:block">
+          </label>`;
+      category.appendChild(categoryHeader);
+
+      const entityCb = categoryHeader.querySelector(".entity-cb");
+      if (entityCb) entityCb.indeterminate = entityOn && !allTypesOn;
+
+      const categoryBody = document.createElement("div");
+      categoryBody.style.cssText = "padding:1px 0 3px;background:#FFFFFF";
+
+      for (const typeName of typeNames) {
+        const elements = typeGroups[typeName] || [];
+        const k = typeKey(docId, entity, typeName);
+        const vis = modelVisible[modelKey(docId)] !== false && entityVisible[eKey] !== false && typeVisible[k] !== false;
+        const isFlat = FLAT_TYPES.has(entity);
+
+        // Ebene 3: Element-Typ / Typname
+        const typeRow = document.createElement("div");
+        typeRow.style.cssText = `
+          display:flex;align-items:center;gap:5px;padding:3px 8px 3px 40px;
+          cursor:pointer;border-bottom:1px solid #F1F5F9;user-select:none;
+          opacity:${vis ? "1" : ".45"};transition:background .12s;line-height:1.15;min-height:20px;box-sizing:border-box`;
+        typeRow.dataset.docId = docId;
+        typeRow.dataset.entity = entity;
+        typeRow.dataset.typeName = typeName;
+        typeRow.innerHTML =
+          `<span class="ttog" style="font-size:8px;color:#CBD5E1;width:8px;flex-shrink:0">▶</span>` +
+          `<input class="type-cb" type="checkbox" ${vis ? "checked" : ""}
+              data-doc-id="${esc(docId)}" data-entity="${esc(entity)}" data-type-name="${esc(typeName)}"
+              style="width:11px;height:11px;accent-color:${colorHex};flex-shrink:0;cursor:pointer;margin:0">` +
+          `<span style="width:8px;height:8px;border-radius:${isFlat ? "0" : "2px"};
+              background:${isFlat ? "transparent" : colorHex};
+              border:${isFlat ? "1px dashed #CBD5E1" : "1.5px solid " + colorWithAlpha(colorHex, "33")};
+              flex-shrink:0;display:inline-block;box-sizing:border-box"></span>` +
+          `<span style="font-size:10px;color:#1E293B;flex:1;overflow:hidden;text-overflow:ellipsis;
+              white-space:nowrap;font-weight:600" title="${esc(typeName)}">${esc(displayTypeName(typeName))}</span>` +
+          `<span style="font-size:9px;color:#94A3B8;flex-shrink:0;background:#F1F5F9;
+              padding:0 5px;border-radius:8px">${elements.length}</span>`;
+        categoryBody.appendChild(typeRow);
+
+        // Ebene 4: Elementname
+        const elemList = document.createElement("div");
+        elemList.style.cssText = "display:none;padding:0;background:#FAFBFD;border-bottom:1px solid #E2E8F0";
+
+        for (const el of elements.slice(0, 150)) {
+          const eRow = document.createElement("div");
+          eRow.style.cssText = `
+            padding:3px 8px 3px 60px;font-size:10px;color:#475569;
+            cursor:pointer;border-bottom:1px solid #F1F5F9;white-space:nowrap;
+            overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;line-height:1.15`;
+          eRow.title = (el.name || displayEntityName(entity)) + (el.globalId ? " · " + el.globalId : "");
+          eRow.dataset.expressId = el.expressId;
+          eRow.dataset.docId = el.docId;
+          eRow.innerHTML =
+            `<span style="width:6px;height:6px;border-radius:50%;background:${colorHex};flex-shrink:0"></span>` +
+            `<span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(el.name || "(Kein Name)")}</span>`;
+          eRow.addEventListener("mouseenter", () => eRow.style.background = "#EFF6FF");
+          eRow.addEventListener("mouseleave", () => eRow.style.background = "");
+          eRow.addEventListener("click", e => {
+            e.stopPropagation();
+            const target = allMeshes().find(m => m.userData.expressId === el.expressId && String(m.userData.docId) === String(el.docId));
+            if (target) {
+              if (!target.visible) {
+                modelVisible[modelKey(docId)] = true;
+                entityVisible[entityKey(docId, entity)] = true;
+                typeVisible[typeKey(docId, entity, typeName)] = true;
+                hiddenIds.delete(meshInstanceKey(target));
+                applyVisibility();
+              }
+              selectMesh(target);
+              const box = new THREE.Box3().setFromObject(target);
+              if (!box.isEmpty()) {
+                orb.tgt.copy(box.getCenter(new THREE.Vector3()));
+                orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.8, 2);
+                applyOrb();
+              }
             }
-            selectMesh(target);
-            const box = new THREE.Box3().setFromObject(target);
-            if (!box.isEmpty()) {
-              orb.tgt.copy(box.getCenter(new THREE.Vector3()));
-              orb.sph.radius = Math.max(box.getSize(new THREE.Vector3()).length() * 2.8, 2);
-              applyOrb();
-            }
-          }
+          });
+          elemList.appendChild(eRow);
+        }
+
+        if (elements.length > 150) {
+          const moreRow = document.createElement("div");
+          moreRow.style.cssText = "padding:4px 60px;font-size:10px;color:#94A3B8;font-style:italic";
+          moreRow.textContent = `… ${elements.length - 150} weitere Elemente`;
+          elemList.appendChild(moreRow);
+        }
+        categoryBody.appendChild(elemList);
+
+        typeRow.addEventListener("click", e => {
+          if (e.target.closest("input")) return;
+          const tog = typeRow.querySelector(".ttog");
+          const collapsed = elemList.style.display === "none";
+          elemList.style.display = collapsed ? "block" : "none";
+          tog.style.color = collapsed ? "#64748B" : "#CBD5E1";
+          tog.textContent = collapsed ? "▼" : "▶";
+          typeRow.style.background = collapsed ? "#F0F7FF" : "";
         });
-        elemList.appendChild(eRow);
+        typeRow.addEventListener("mouseenter", () => {
+          if (elemList.style.display === "none") typeRow.style.background = "#F8FAFC";
+        });
+        typeRow.addEventListener("mouseleave", () => {
+          if (elemList.style.display === "none") typeRow.style.background = "";
+        });
       }
 
-      if (elements.length > 150) {
-        const moreRow = document.createElement("div");
-        moreRow.style.cssText = "padding:5px 52px;font-size:10px;color:#94A3B8;font-style:italic";
-        moreRow.textContent = `… ${elements.length - 150} weitere Elemente`;
-        elemList.appendChild(moreRow);
-      }
-      categoryBody.appendChild(elemList);
+      category.appendChild(categoryBody);
+      modelBody.appendChild(category);
 
-      typeRow.addEventListener("click", e => {
-        if (e.target.closest("input")) return;
-        const tog = typeRow.querySelector(".ttog");
-        const collapsed = elemList.style.display === "none";
-        elemList.style.display = collapsed ? "block" : "none";
-        tog.style.color = collapsed ? "#64748B" : "#CBD5E1";
-        tog.textContent = collapsed ? "▼" : "▶";
-        typeRow.style.background = collapsed ? "#F0F7FF" : "";
-      });
-      typeRow.addEventListener("mouseenter", () => {
-        if (elemList.style.display === "none") typeRow.style.background = "#F8FAFC";
-      });
-      typeRow.addEventListener("mouseleave", () => {
-        if (elemList.style.display === "none") typeRow.style.background = "";
+      categoryHeader.addEventListener("click", e => {
+        if (e.target.closest("input,label")) return;
+        const tog = categoryHeader.querySelector(".etog");
+        const collapsed = categoryBody.style.display === "none";
+        categoryBody.style.display = collapsed ? "" : "none";
+        tog.style.transform = collapsed ? "" : "rotate(-90deg)";
       });
     }
 
-    category.appendChild(categoryBody);
-    list.appendChild(category);
+    modelBlock.appendChild(modelBody);
+    list.appendChild(modelBlock);
 
-    categoryHeader.addEventListener("click", e => {
+    modelHeader.addEventListener("click", e => {
       if (e.target.closest("input,label")) return;
-      const tog = categoryHeader.querySelector(".etog");
-      const collapsed = categoryBody.style.display === "none";
-      categoryBody.style.display = collapsed ? "" : "none";
+      const tog = modelHeader.querySelector(".mtog");
+      const collapsed = modelBody.style.display === "none";
+      modelBody.style.display = collapsed ? "" : "none";
       tog.style.transform = collapsed ? "" : "rotate(-90deg)";
     });
   }
@@ -959,23 +1051,41 @@ function buildCategoryUI() {
       buildCategoryUI();
       return;
     }
-    if (target.classList.contains("entity-cb")) {
-      const entity = target.dataset.entity;
+    if (target.classList.contains("model-cb")) {
+      const docId = target.dataset.docId;
       const checked = target.checked;
-      entityVisible[entity] = checked;
-      for (const typeName of Object.keys(structureTree[entity] || {})) {
-        typeVisible[typeKey(entity, typeName)] = checked;
+      modelVisible[modelKey(docId)] = checked;
+      for (const entity of Object.keys(modelEntities(docId))) {
+        entityVisible[entityKey(docId, entity)] = checked;
+        for (const typeName of entityTypeNames(docId, entity)) {
+          typeVisible[typeKey(docId, entity, typeName)] = checked;
+        }
       }
       buildCategoryUI();
       applyVisibility();
       return;
     }
+    if (target.classList.contains("entity-cb")) {
+      const docId = target.dataset.docId;
+      const entity = target.dataset.entity;
+      const checked = target.checked;
+      if (checked) modelVisible[modelKey(docId)] = true;
+      entityVisible[entityKey(docId, entity)] = checked;
+      for (const typeName of entityTypeNames(docId, entity)) {
+        typeVisible[typeKey(docId, entity, typeName)] = checked;
+      }
+      if (!checked) modelVisible[modelKey(docId)] = modelHasAnyVisibleChild(docId);
+      buildCategoryUI();
+      applyVisibility();
+      return;
+    }
     if (target.classList.contains("type-cb")) {
+      const docId = target.dataset.docId;
       const entity = target.dataset.entity;
       const typeName = target.dataset.typeName || "Ohne Typ";
-      typeVisible[typeKey(entity, typeName)] = target.checked;
-      const typeNames = Object.keys(structureTree[entity] || {});
-      entityVisible[entity] = typeNames.some(t => typeVisible[typeKey(entity, t)] !== false);
+      typeVisible[typeKey(docId, entity, typeName)] = target.checked;
+      entityVisible[entityKey(docId, entity)] = entityHasAnyTypeOn(docId, entity);
+      modelVisible[modelKey(docId)] = target.checked ? true : modelHasAnyVisibleChild(docId);
       buildCategoryUI();
       applyVisibility();
     }
@@ -983,10 +1093,13 @@ function buildCategoryUI() {
 }
 
 function setCatAll(v) {
-  for (const entity of Object.keys(structureTree)) {
-    entityVisible[entity] = v;
-    for (const typeName of Object.keys(structureTree[entity] || {})) {
-      typeVisible[typeKey(entity, typeName)] = v;
+  for (const docId of Object.keys(structureTree)) {
+    modelVisible[modelKey(docId)] = v;
+    for (const entity of Object.keys(modelEntities(docId))) {
+      entityVisible[entityKey(docId, entity)] = v;
+      for (const typeName of entityTypeNames(docId, entity)) {
+        typeVisible[typeKey(docId, entity, typeName)] = v;
+      }
     }
   }
   buildCategoryUI();
@@ -1127,7 +1240,14 @@ async function loadModel(cfg, index, total) {
   scene.add(group);
   modelGroups[docId] = group;
   modelMeshes[docId] = [];
-  docMeta[docId] = { label: cfg.label, color: cfg.color };
+  const docKey = modelKey(docId);
+  docMeta[docKey] = { label: cfg.label, color: cfg.color };
+  if (!structureTree[docKey]) structureTree[docKey] = { label: cfg.label, color: cfg.color, entities: {} };
+  structureTree[docKey].label = cfg.label;
+  structureTree[docKey].color = cfg.color;
+  if (!structureTree[docKey].entities) structureTree[docKey].entities = {};
+  if (modelVisible[docKey] === undefined) modelVisible[docKey] = true;
+  const docEntities = structureTree[docKey].entities;
 
   const fms = webIfc.LoadAllGeometry(modelId);
   let vertCount = 0;
@@ -1145,12 +1265,13 @@ async function loadModel(cfg, index, total) {
 
     if (!seen.has(expId)) {
       seen.add(expId);
-      if (!structureTree[tName]) structureTree[tName] = {};
-      if (!structureTree[tName][elementTypeName]) structureTree[tName][elementTypeName] = [];
-      if (entityVisible[tName] === undefined) entityVisible[tName] = !isFlat;
-      const k = typeKey(tName, elementTypeName);
+      if (!docEntities[tName]) docEntities[tName] = {};
+      if (!docEntities[tName][elementTypeName]) docEntities[tName][elementTypeName] = [];
+      const eKey = entityKey(docKey, tName);
+      if (entityVisible[eKey] === undefined) entityVisible[eKey] = !isFlat;
+      const k = typeKey(docKey, tName, elementTypeName);
       if (typeVisible[k] === undefined) typeVisible[k] = !isFlat;
-      structureTree[tName][elementTypeName].push({
+      docEntities[tName][elementTypeName].push({
         name: sv(line?.Name) || sv(line?.GlobalId) || String(expId),
         expressId: expId,
         globalId: sv(line?.GlobalId),
@@ -1198,7 +1319,7 @@ async function loadModel(cfg, index, total) {
       const mesh = new THREE.Mesh(geo, mat.clone());
       mesh.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation));
       mesh.userData = { ...meta, _baseColor: tCol.clone(), _origColor: tCol.clone() };
-      mesh.visible = isStructureTypeVisible(tName, elementTypeName);
+      mesh.visible = isStructureTypeVisible(docId, tName, elementTypeName);
       group.add(mesh);
       modelMeshes[docId].push(mesh);
       vertCount += pa.length / 3;
