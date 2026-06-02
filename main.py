@@ -76,7 +76,7 @@ from app.storage import (
     load_clash_cache,
     save_clash_cache,
 )
-from app.viewer import router as viewer_router
+
 from app.templates import (
     _base_styles as _bp_base_styles,
     _footer_html as _bp_footer_html,
@@ -152,7 +152,6 @@ app.include_router(auth_router)
 
 # Reihenfolge wichtig:
 # projects_router definiert "/" und muss vor viewer_router liegen.
-app.include_router(projects_router)
 app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
 app.include_router(viewer_router)
