@@ -423,7 +423,16 @@ def project_clash_detail(
     gid1: str = Query(...),
     gid2: str = Query(...),
 ):
-    from app.viewer import _brand_logo, _page, _slot_color, _viewer_js
+    account, project, session_id = _load_context(request, project_id)
+    if not project:
+        return RedirectResponse("/", status_code=302)
+    return RedirectResponse(
+        f"/projects/{_e(project_id)}/view",
+        status_code=302
+    )
+
+from app.projects import _brand_logo, _page
+from app.project_viewer import _slot_color
 
     account, project, session_id = _load_context(request, project_id)
     if not project:
