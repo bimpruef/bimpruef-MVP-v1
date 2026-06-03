@@ -147,17 +147,13 @@ async def authentication_middleware(request: Request, call_next):
 # ─────────────────────────────────────────────────────────────────────────────
 # Router
 # ─────────────────────────────────────────────────────────────────────────────
-
 app.include_router(auth_router)
-
-# Reihenfolge wichtig:
-# projects_router definiert "/" und muss vor viewer_router liegen.
+app.include_router(projects_router)
 app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
-app.include_router(viewer_router)
 app.include_router(list_router)
 app.include_router(project_viewer_router)
-
+  
 # ─────────────────────────────────────────────────────────────────────────────
 # Debug – Cloudflare R2 Verbindung testen
 # ─────────────────────────────────────────────────────────────────────────────
