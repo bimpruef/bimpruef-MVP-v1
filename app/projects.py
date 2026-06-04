@@ -245,7 +245,7 @@ def _flash_from_query(saved: str = "", error: str = "") -> str:
 # Root → Projektübersicht
 # ─────────────────────────────────────────────────────────────────────────────
 
-@projects_router.get("/", response_class=HTMLResponse)
+@projects_router.get("/projects", response_class=HTMLResponse)
 def projects_home(request: Request):
     account  = _account_from_request(request)
     account_id = account["account_id"]
