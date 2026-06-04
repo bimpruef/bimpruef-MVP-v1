@@ -154,7 +154,21 @@ app.include_router(project_clash_router)
 app.include_router(project_rulecheck_router)
 app.include_router(list_router)
 app.include_router(project_viewer_router)
-  
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Landing Page
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    user = get_current_user_optional(request)
+    if user:
+        return RedirectResponse("/projects", status_code=302)
+    landing_path = os.path.join(STATIC_DIR, "landing.html")
+    with open(landing_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+      
 # ─────────────────────────────────────────────────────────────────────────────
 # Debug – Cloudflare R2 Verbindung testen
 # ─────────────────────────────────────────────────────────────────────────────
