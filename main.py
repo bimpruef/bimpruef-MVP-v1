@@ -123,6 +123,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
     public_prefixes = (
+        "/",
         "/auth",
         "/impressum",
         "/datenschutz",
