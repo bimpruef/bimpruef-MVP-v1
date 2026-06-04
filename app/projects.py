@@ -137,9 +137,9 @@ def _topbar_global(account: dict) -> str:
     return (
         '<nav class="bp-nav">'
         '<div class="bp-nav__inner">'
-        '<a href="/" class="bp-nav__logo"><div class="bp-nav__logo-mark">BP</div>BIMPruef</a>'
+        '<a href="/projects" class="bp-nav__logo"><div class="bp-nav__logo-mark">BP</div>BIMPruef</a>'
         '<div class="bp-nav__links">'
-        '<a href="/" class="bp-nav__link bp-nav__link--active">Projekte</a>'
+        '<a href="/projects" class="bp-nav__link bp-nav__link--active">Projekte</a>'
         '<a href="/impressum" class="bp-nav__link">Impressum</a>'
         '<a href="/datenschutz" class="bp-nav__link">Datenschutz</a>'
         '</div>'
@@ -326,7 +326,7 @@ def account_settings(request: Request, saved: str = "", error: str = ""):
         '<h1 style="font-size:22px;font-weight:600">Account-Verwaltung</h1>'
         '<p style="color:var(--muted);font-size:13px;margin-top:4px">Login-Daten, persönliche Angaben und vollständige Account-Löschung.</p>'
         '</div>'
-        '<a href="/" class="btn" style="text-decoration:none;font-size:12px">← Zur Projektübersicht</a>'
+        '<a href="/projects" class="btn" style="text-decoration:none;font-size:12px">← Zur Projektübersicht</a>'
         '</div>'
         f'{flash_html}'
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;align-items:start">'
@@ -492,7 +492,7 @@ def new_project_form(request: Request, error: str = ""):
         '<textarea name="description" rows="3" placeholder="Kurze Beschreibung …" style="resize:vertical"></textarea>'
         '<div style="margin-top:20px;display:flex;gap:10px">'
         '<button type="submit" class="btn btn-primary">Projekt erstellen</button>'
-        '<a href="/" class="btn" style="text-decoration:none">Abbrechen</a>'
+        '<a href="/projects" class="btn" style="text-decoration:none">Abbrechen</a>'
         '</div>'
         '</form>'
         '</div>'
@@ -528,7 +528,7 @@ def project_dashboard(request: Request, project_id: str):
     account_id = account["account_id"]
     project = get_project(account_id, project_id)
     if not project:
-        return _page("Nicht gefunden", '<div style="padding:40px">Projekt nicht gefunden. <a href="/">← Zurück</a></div>')
+        return _page("Nicht gefunden", '<div style="padding:40px">Projekt nicht gefunden. <a href="/projects">← Zurück</a></div>')
 
     pid    = _e(project_id)
     pname  = project["project_name"]
@@ -570,7 +570,7 @@ def project_dashboard(request: Request, project_id: str):
         f'<h1 style="font-size:22px;font-weight:600">{_e(pname)}</h1>'
         f'<p style="color:var(--muted);font-size:13px;margin-top:2px">{_e(pcode)} &nbsp;·&nbsp; {badge}</p>'
         f'</div>'
-        f'<a href="/" class="btn" style="text-decoration:none;font-size:12px">← Alle Projekte</a>'
+        f'<a href="/projects" class="btn" style="text-decoration:none;font-size:12px">← Alle Projekte</a>'
         f'</div>'
     )
 
