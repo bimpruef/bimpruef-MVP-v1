@@ -1,19 +1,19 @@
 """
 project_rulecheck.py – BIMPruef Rule-Check als eigenständiges Projektmodul
 
-Dieses Modul löst den bisherigen /viewer/rulecheck/-Pfad ab.
-Die Rule-Check (Checking) ist kein Bestandteil des Viewers mehr.
-Sie lädt IFC/IFCZIP-Dateien ausschließlich aus dem Documents-Modul –
-identisches Muster wie project_clash.py.
+Enthält sowohl die Regellogik als auch die Web-Routen.
+(rulecheck.py wurde in dieses Modul zusammengeführt und kann gelöscht werden.)
 
 Routen:
-  GET  /projects/{project_id}/checking          → Rule-Check UI (Konfiguration + Ergebnisse)
-  POST /projects/{project_id}/checking/load     → Modelle aus Documents in Cache laden
+  GET  /projects/{project_id}/checking          → Rule-Check UI
+  POST /projects/{project_id}/checking/load     → Modelle aus Documents laden
   POST /projects/{project_id}/checking/run      → Regelprüfung ausführen (JSON-API)
   GET  /projects/{project_id}/checking/export   → Ergebnisse als JSON exportieren
 
-Legacy-Redirect:
-  GET  /viewer/rulecheck/  →  /projects/{project_id}/checking  (falls project_id bekannt)
+Legacy-Redirects (Abwärtskompatibilität):
+  GET  /viewer/rulecheck/        → /projects/{project_id}/checking  (302)
+  POST /viewer/rulecheck/run/    → 410 Gone
+  GET  /viewer/rulecheck/export/ → 410 Gone
 """
 
 import html
@@ -22,6 +22,7 @@ import os
 from urllib.parse import quote_plus
 
 import ifcopenshell
+import ifcopenshell.util.element
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
@@ -31,19 +32,316 @@ from app.document_storage import (
     prepare_viewer_session_from_project_documents,
 )
 from app.project_storage import get_or_create_project_session, get_project
-from app.rulecheck import ALL_RULES, _RULE_FUNCTIONS, run_rules_on_model
 from app.storage import get_ifc_label, get_ifc_path, get_session_slots, session_exists
 
 project_rulecheck_router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Regel-Definitionen
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALL_RULES = [
+    {
+        "id":          "missing_names",
+        "label":       "Fehlende Namen",
+        "description": "Prüft alle relevanten IfcProduct-Elemente auf fehlende Name-Attribute.",
+        "severity":    "warning",
+    },
+    {
+        "id":          "missing_global_id",
+        "label":       "Fehlende GlobalId",
+        "description": "Prüft alle IfcProduct-Elemente direkt auf fehlende GlobalId.",
+        "severity":    "error",
+    },
+    {
+        "id":          "missing_spaces",
+        "label":       "Fehlende Räume (IfcSpace)",
+        "description": "Warnt, wenn im Modell keine IfcSpace-Elemente vorhanden sind.",
+        "severity":    "warning",
+    },
+    {
+        "id":          "door_without_name",
+        "label":       "Türen ohne Name",
+        "description": "Prüft alle IfcDoor-Elemente auf fehlende Namen.",
+        "severity":    "warning",
+    },
+    {
+        "id":          "window_without_name",
+        "label":       "Fenster ohne Name",
+        "description": "Prüft alle IfcWindow-Elemente auf fehlende Namen.",
+        "severity":    "warning",
+    },
+    {
+        "id":          "wall_without_fire_rating",
+        "label":       "Wände ohne Brandschutzklasse",
+        "description": "Prüft IfcWall/IfcWallStandardCase auf fehlende FireRating-Eigenschaft "
+                       "(sucht nach: FireRating, Feuerwiderstand, Brandschutz).",
+        "severity":    "error",
+    },
+    {
+        "id":          "external_wall_check",
+        "label":       "Außenwand-Kennzeichnung",
+        "description": "Prüft Wände auf IsExternal-Eigenschaft. Fehlende Kennzeichnung wird als Hinweis ausgegeben.",
+        "severity":    "info",
+    },
+]
+
+_RULE_META = {r["id"]: r for r in ALL_RULES}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hilfsfunktionen
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _e(s) -> str:
     return html.escape(str(s or ""))
 
+
+def _flatten_psets(psets: dict) -> dict:
+    flat = {}
+    for pset_name, props in (psets or {}).items():
+        if isinstance(props, dict):
+            for prop_name, value in props.items():
+                flat_key = f"{pset_name}.{prop_name}".lower()
+                flat[flat_key] = str(value) if value is not None else ""
+    return flat
+
+
+def _psets_contain_key(psets: dict, search_terms: list) -> bool:
+    flat = _flatten_psets(psets)
+    for key in flat:
+        prop_name = key.split(".", 1)[-1] if "." in key else key
+        for term in search_terms:
+            if term.lower() in prop_name:
+                return True
+    return False
+
+
+def _make_result(
+    rule_id: str,
+    severity: str,
+    slot: int,
+    file_label: str,
+    ifc_type: str,
+    name: str,
+    global_id: str,
+    express_id,
+    message: str,
+) -> dict:
+    return {
+        "rule_id":    rule_id,
+        "severity":   severity,
+        "slot":       slot,
+        "file_label": file_label,
+        "ifc_type":   ifc_type,
+        "name":       name or "",
+        "global_id":  global_id or "",
+        "express_id": str(express_id or ""),
+        "message":    message,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regelprüfungen
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_missing_names(model, slot: int, file_label: str) -> list:
+    from app.extractors import get_candidate_products, extract_element_data
+    results = []
+    for elem in get_candidate_products(model):
+        data = extract_element_data(elem, file_label=file_label)
+        if not data.get("name", "").strip():
+            results.append(_make_result(
+                rule_id="missing_names", severity="warning",
+                slot=slot, file_label=file_label,
+                ifc_type=data.get("type", ""), name="",
+                global_id=data.get("global_id", ""),
+                express_id=data.get("express_id", ""),
+                message=f"Element ohne Name gefunden (Typ: {data.get('type', '?')}).",
+            ))
+    return results
+
+
+def check_missing_global_id(model, slot: int, file_label: str) -> list:
+    results = []
+    try:
+        for obj in model.by_type("IfcProduct"):
+            try:
+                global_id = getattr(obj, "GlobalId", None)
+                if not global_id:
+                    ifc_type   = obj.is_a() if hasattr(obj, "is_a") else "IfcProduct"
+                    name       = getattr(obj, "Name", None) or ""
+                    express_id = obj.id() if hasattr(obj, "id") else ""
+                    results.append(_make_result(
+                        rule_id="missing_global_id", severity="error",
+                        slot=slot, file_label=file_label,
+                        ifc_type=ifc_type, name=name, global_id="",
+                        express_id=express_id,
+                        message=f"Element ohne GlobalId (Express-ID: {express_id}, Typ: {ifc_type}).",
+                    ))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
+
+
+def check_missing_spaces(model, slot: int, file_label: str) -> list:
+    results = []
+    try:
+        if not model.by_type("IfcSpace"):
+            results.append(_make_result(
+                rule_id="missing_spaces", severity="warning",
+                slot=slot, file_label=file_label,
+                ifc_type="IfcSpace", name="", global_id="", express_id="",
+                message="Kein IfcSpace im Modell gefunden. Raumstruktur fehlt möglicherweise.",
+            ))
+    except Exception:
+        pass
+    return results
+
+
+def check_door_without_name(model, slot: int, file_label: str) -> list:
+    results = []
+    try:
+        for door in model.by_type("IfcDoor"):
+            try:
+                name = getattr(door, "Name", None) or ""
+                if not name.strip():
+                    global_id  = getattr(door, "GlobalId", None) or ""
+                    express_id = door.id() if hasattr(door, "id") else ""
+                    results.append(_make_result(
+                        rule_id="door_without_name", severity="warning",
+                        slot=slot, file_label=file_label,
+                        ifc_type="IfcDoor", name="", global_id=global_id,
+                        express_id=express_id,
+                        message=f"Tür ohne Name (GlobalId: {global_id or 'unbekannt'}).",
+                    ))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
+
+
+def check_window_without_name(model, slot: int, file_label: str) -> list:
+    results = []
+    try:
+        for window in model.by_type("IfcWindow"):
+            try:
+                name = getattr(window, "Name", None) or ""
+                if not name.strip():
+                    global_id  = getattr(window, "GlobalId", None) or ""
+                    express_id = window.id() if hasattr(window, "id") else ""
+                    results.append(_make_result(
+                        rule_id="window_without_name", severity="warning",
+                        slot=slot, file_label=file_label,
+                        ifc_type="IfcWindow", name="", global_id=global_id,
+                        express_id=express_id,
+                        message=f"Fenster ohne Name (GlobalId: {global_id or 'unbekannt'}).",
+                    ))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
+
+
+def check_wall_without_fire_rating(model, slot: int, file_label: str) -> list:
+    results = []
+    fire_keys = ["firerating", "feuerwiderstand", "brandschutz"]
+    wall_types = []
+    for wt in ("IfcWall", "IfcWallStandardCase"):
+        try:
+            wall_types.extend(model.by_type(wt))
+        except Exception:
+            pass
+    for wall in wall_types:
+        try:
+            psets      = ifcopenshell.util.element.get_psets(wall) or {}
+            name       = getattr(wall, "Name", None) or ""
+            global_id  = getattr(wall, "GlobalId", None) or ""
+            express_id = wall.id() if hasattr(wall, "id") else ""
+            ifc_type   = wall.is_a() if hasattr(wall, "is_a") else "IfcWall"
+            if not _psets_contain_key(psets, fire_keys):
+                results.append(_make_result(
+                    rule_id="wall_without_fire_rating", severity="error",
+                    slot=slot, file_label=file_label,
+                    ifc_type=ifc_type, name=name, global_id=global_id,
+                    express_id=express_id,
+                    message=f"Wand '{name or global_id}' hat keine FireRating-Eigenschaft.",
+                ))
+        except Exception:
+            continue
+    return results
+
+
+def check_external_wall(model, slot: int, file_label: str) -> list:
+    results = []
+    ext_keys = ["isexternal"]
+    wall_types = []
+    for wt in ("IfcWall", "IfcWallStandardCase"):
+        try:
+            wall_types.extend(model.by_type(wt))
+        except Exception:
+            pass
+    for wall in wall_types:
+        try:
+            psets      = ifcopenshell.util.element.get_psets(wall) or {}
+            name       = getattr(wall, "Name", None) or ""
+            global_id  = getattr(wall, "GlobalId", None) or ""
+            express_id = wall.id() if hasattr(wall, "id") else ""
+            ifc_type   = wall.is_a() if hasattr(wall, "is_a") else "IfcWall"
+            if not _psets_contain_key(psets, ext_keys):
+                results.append(_make_result(
+                    rule_id="external_wall_check", severity="info",
+                    slot=slot, file_label=file_label,
+                    ifc_type=ifc_type, name=name, global_id=global_id,
+                    express_id=express_id,
+                    message=f"Wand '{name or global_id}' hat keine IsExternal-Eigenschaft.",
+                ))
+        except Exception:
+            continue
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regel-Dispatcher
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RULE_FUNCTIONS = {
+    "missing_names":            check_missing_names,
+    "missing_global_id":        check_missing_global_id,
+    "missing_spaces":           check_missing_spaces,
+    "door_without_name":        check_door_without_name,
+    "window_without_name":      check_window_without_name,
+    "wall_without_fire_rating": check_wall_without_fire_rating,
+    "external_wall_check":      check_external_wall,
+}
+
+
+def run_rules_on_model(model, slot: int, file_label: str, rules: list) -> list:
+    results = []
+    for rule_id in rules:
+        fn = _RULE_FUNCTIONS.get(rule_id)
+        if fn is None:
+            continue
+        try:
+            results.extend(fn(model, slot, file_label))
+        except Exception as exc:
+            results.append(_make_result(
+                rule_id=rule_id, severity="error",
+                slot=slot, file_label=file_label,
+                ifc_type="", name="", global_id="", express_id="",
+                message=f"Interner Fehler beim Ausführen der Regel '{rule_id}': {exc}",
+            ))
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth / Context helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _account_from_request(request: Request) -> dict:
     user = require_user(request)
@@ -76,20 +374,18 @@ def _fmt_size(num: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Documents-Panel (Modelle aus Documents für Checking laden)
+# Documents-Panel
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _documents_panel(account: dict, project_id: str, slots: list[int],
-                      session_id: str, saved: str = "", error: str = "") -> str:
+                     session_id: str, saved: str = "", error: str = "") -> str:
     docs = list_project_ifc_documents(account["account_id"], project_id)
 
+    slot_hint = "Keine Modelle in den Checking-Cache geladen."
     if slots:
         slot_hint = "Aktuell geladene Modelle: " + ", ".join(
-            f"Slot {s}: {_e(get_ifc_label(session_id, s))}"
-            for s in slots
+            f"Slot {s}: {_e(get_ifc_label(session_id, s))}" for s in slots
         )
-    else:
-        slot_hint = "Keine Modelle in den Checking-Cache geladen."
 
     flash = ""
     if error:
@@ -103,8 +399,8 @@ def _documents_panel(account: dict, project_id: str, slots: list[int],
         <div class="card" style="border-color:var(--accent2)">
           <h3 style="font-size:15px;margin-bottom:8px">Keine IFC-Dateien im Documents-Modul</h3>
           <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
-            Die Rule-Check liest keine Viewer-Uploads mehr. Lade zuerst .ifc oder .ifczip
-            im Documents-Modul hoch.
+            Die Rule-Check liest ausschließlich aus dem Documents-Modul.
+            Lade zuerst .ifc oder .ifczip dort hoch.
           </p>
           <a class="btn btn-primary" href="/projects/{_e(project_id)}/documents"
              style="text-decoration:none">Zu Documents</a>
@@ -152,7 +448,7 @@ def _documents_panel(account: dict, project_id: str, slots: list[int],
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Haupt-UI-Render
+# Haupt-UI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _checking_page(project: dict, account: dict, session_id: str,
@@ -164,7 +460,7 @@ def _checking_page(project: dict, account: dict, session_id: str,
     docs_panel = _documents_panel(account, project_id, slots, session_id,
                                   saved=saved, error=error)
 
-    # ── Slot-Auswahl-HTML ────────────────────────────────────────────────────
+    # Slot-Auswahl
     if not slots:
         slots_html = (
             '<div class="flash-err">'
@@ -185,10 +481,10 @@ def _checking_page(project: dict, account: dict, session_id: str,
             )
         slots_html += '</div>'
 
-    # ── Regel-Auswahl-HTML ──────────────────────────────────────────────────
-    rules_html = '<div style="display:flex;flex-direction:column;gap:8px">'
+    # Regel-Auswahl
     SEV_LABEL = {"error": "Fehler", "warning": "Warnung", "info": "Hinweis"}
     SEV_CLS   = {"error": "badge-error", "warning": "badge-warning", "info": "badge-info"}
+    rules_html = '<div style="display:flex;flex-direction:column;gap:8px">'
     for rule in ALL_RULES:
         sev     = rule["severity"]
         badge_c = SEV_CLS.get(sev, "")
@@ -228,17 +524,15 @@ def _checking_page(project: dict, account: dict, session_id: str,
     <div>
       <h1 style="font-size:22px;font-weight:600">Rule-Check (Checking)</h1>
       <p style="color:var(--muted);font-size:13px;margin-top:4px">
-        Eigenständiges Projektmodul. IFC-Quelle ist Documents; kein Viewer-Upload.
+        IFC-Quelle ist Documents; kein Viewer-Upload erforderlich.
       </p>
     </div>
     <a class="btn" href="/projects/{_e(project_id)}" style="text-decoration:none">← Projekt</a>
   </div>
 
   {docs_panel}
-
   {no_slots_warning}
 
-  <!-- Slot-Auswahl -->
   <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="font-size:15px">Modell-Slots</h2>
@@ -246,7 +540,6 @@ def _checking_page(project: dict, account: dict, session_id: str,
     <div id="slot-selection">{slots_html}</div>
   </div>
 
-  <!-- Regelauswahl -->
   <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="font-size:15px">Regeln</h2>
@@ -260,7 +553,6 @@ def _checking_page(project: dict, account: dict, session_id: str,
     <div id="rule-selection">{rules_html}</div>
   </div>
 
-  <!-- Start-Button -->
   <div style="margin-bottom:24px">
     <button id="btn-run" class="btn btn-primary"
             style="font-size:14px;padding:10px 28px" onclick="runCheck()"
@@ -270,7 +562,6 @@ def _checking_page(project: dict, account: dict, session_id: str,
     <span id="run-status" style="margin-left:14px;font-size:12px;color:var(--muted)"></span>
   </div>
 
-  <!-- Ergebnis-Bereich -->
   <div id="result-area" style="display:none">
 
     <div class="card" id="result-summary"></div>
@@ -288,15 +579,9 @@ def _checking_page(project: dict, account: dict, session_id: str,
       <table id="result-table">
         <thead>
           <tr>
-            <th>#</th>
-            <th>Schwere</th>
-            <th>Regel</th>
-            <th>Slot</th>
-            <th>Datei</th>
-            <th>IFC-Typ</th>
-            <th>Name</th>
-            <th>GlobalId</th>
-            <th>Meldung</th>
+            <th>#</th><th>Schwere</th><th>Regel</th><th>Slot</th>
+            <th>Datei</th><th>IFC-Typ</th><th>Name</th>
+            <th>GlobalId</th><th>Meldung</th>
           </tr>
         </thead>
         <tbody id="result-tbody"></tbody>
@@ -315,7 +600,6 @@ let _currentFilter = 'all';
 function toggleAll(state) {{
   document.querySelectorAll('.rule-cb').forEach(cb => cb.checked = state);
 }}
-
 function severityLabel(sev) {{
   return {{error:'Fehler', warning:'Warnung', info:'Hinweis'}}[sev] || sev;
 }}
@@ -327,7 +611,6 @@ function esc(s) {{
   d.textContent = s ?? '';
   return d.innerHTML;
 }}
-
 function renderTable(results) {{
   const tbody = document.getElementById('result-tbody');
   if (!results.length) {{
@@ -349,7 +632,6 @@ function renderTable(results) {{
     </tr>`
   ).join('');
 }}
-
 function filterSev(sev) {{
   _currentFilter = sev;
   document.querySelectorAll('#sev-filter .btn').forEach(b => {{
@@ -357,84 +639,59 @@ function filterSev(sev) {{
   }});
   renderTable(sev === 'all' ? _allResults : _allResults.filter(r => r.severity === sev));
 }}
-
 async function runCheck() {{
   const slots = [...document.querySelectorAll('.slot-cb:checked')].map(cb => parseInt(cb.value));
   const rules = [...document.querySelectorAll('.rule-cb:checked')].map(cb => cb.value);
-
   if (!slots.length) {{ alert('Bitte mindestens einen Slot auswählen.'); return; }}
-  if (!rules.length) {{ alert('Bitte mindestens eine Regel auswählen.'); return; }}
-
+  if (!rules.length)  {{ alert('Bitte mindestens eine Regel auswählen.'); return; }}
   const btn    = document.getElementById('btn-run');
   const status = document.getElementById('run-status');
   btn.disabled = true;
   status.textContent = 'Prüfung läuft …';
   document.getElementById('result-area').style.display = 'none';
-
   try {{
     const resp = await fetch(RUN_URL, {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{slots, rules}}),
     }});
-
     let data;
     try {{ data = await resp.json(); }}
-    catch (_) {{
-      alert(`HTTP ${{resp.status}} – Antwort konnte nicht geparst werden.`);
-      status.textContent = '';
-      btn.disabled = false;
-      return;
-    }}
-
+    catch (_) {{ alert(`HTTP ${{resp.status}} – Antwort konnte nicht geparst werden.`); return; }}
     if (!resp.ok || data.error) {{
       alert('Fehler: ' + (data.error || data.detail || `HTTP ${{resp.status}}`));
-      status.textContent = '';
-      btn.disabled = false;
       return;
     }}
-
     _allResults = data.results || [];
     const counts = data.summary || {{}};
-
     document.getElementById('result-summary').innerHTML = `
       <h2 style="font-size:15px;margin-bottom:12px">Ergebnis-Zusammenfassung</h2>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;
-          padding:10px 20px;text-align:center">
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 20px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:var(--text)">${{counts.total ?? 0}}</div>
           <div style="font-size:11px;color:var(--muted)">Gesamt</div>
         </div>
-        <div style="background:#2a0a10;border:1px solid #6e1a2e;border-radius:8px;
-          padding:10px 20px;text-align:center">
+        <div style="background:#2a0a10;border:1px solid #6e1a2e;border-radius:8px;padding:10px 20px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:#ef9a9a">${{counts.errors ?? 0}}</div>
           <div style="font-size:11px;color:var(--muted)">Fehler</div>
         </div>
-        <div style="background:#3e2800;border:1px solid #6e4800;border-radius:8px;
-          padding:10px 20px;text-align:center">
+        <div style="background:#3e2800;border:1px solid #6e4800;border-radius:8px;padding:10px 20px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:#ffb74d">${{counts.warnings ?? 0}}</div>
           <div style="font-size:11px;color:var(--muted)">Warnungen</div>
         </div>
-        <div style="background:#0d2a3e;border:1px solid #1a4a6e;border-radius:8px;
-          padding:10px 20px;text-align:center">
+        <div style="background:#0d2a3e;border:1px solid #1a4a6e;border-radius:8px;padding:10px 20px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:#64b5f6">${{counts.infos ?? 0}}</div>
           <div style="font-size:11px;color:var(--muted)">Hinweise</div>
         </div>
-        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;
-          padding:10px 20px;text-align:center">
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 20px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:var(--success)">${{counts.slots_checked ?? 0}}</div>
           <div style="font-size:11px;color:var(--muted)">Slots geprüft</div>
         </div>
       </div>`;
-
-    const exportParams = new URLSearchParams({{
-      slots: slots.join(','),
-      rules: rules.join(','),
-    }});
+    const exportParams = new URLSearchParams({{slots: slots.join(','), rules: rules.join(',')}});
     const exportBtn = document.getElementById('btn-export');
     exportBtn.href  = EXPORT_BASE + '?' + exportParams.toString();
     exportBtn.style.display = '';
-
     document.getElementById('result-area').style.display = '';
     filterSev('all');
     status.textContent = `Fertig – ${{_allResults.length}} Befunde.`;
@@ -461,7 +718,6 @@ def project_checking_page(
     saved: str = Query(default=""),
     error: str = Query(default=""),
 ):
-    """Hauptseite: Rule-Check Konfiguration + Ergebnisanzeige."""
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
@@ -474,20 +730,15 @@ def project_checking_load(
     project_id: str,
     document_ids: list[str] = Form(default=[]),
 ):
-    """Modelle aus Documents in den Checking-Cache (Viewer-Session) laden."""
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
     try:
         prepare_viewer_session_from_project_documents(
-            account["account_id"],
-            project_id,
-            document_ids,
-            session_id=session_id,
+            account["account_id"], project_id, document_ids, session_id=session_id,
         )
         return RedirectResponse(
-            f"/projects/{_e(project_id)}/checking?saved=load",
-            status_code=303,
+            f"/projects/{_e(project_id)}/checking?saved=load", status_code=303,
         )
     except Exception as exc:
         return RedirectResponse(
@@ -498,15 +749,6 @@ def project_checking_load(
 
 @project_rulecheck_router.post("/projects/{project_id}/checking/run")
 async def project_checking_run(request: Request, project_id: str):
-    """
-    Regelprüfung ausführen.
-
-    Request-Body (JSON):
-      { "slots": [1, 2], "rules": ["missing_names", ...] }
-
-    Response (JSON):
-      { "summary": {...}, "results": [...] }
-    """
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return JSONResponse({"error": "Projekt nicht gefunden."}, status_code=404)
@@ -531,11 +773,13 @@ async def project_checking_run(request: Request, project_id: str):
     except (TypeError, ValueError):
         return JSONResponse({"error": "Ungültige Slot-Angabe."}, status_code=400)
 
-    # Nur tatsächlich vorhandene Slots zulassen
     available_slots = get_session_slots(session_id)
     slots = [s for s in slots if s in available_slots]
     if not slots:
-        return JSONResponse({"error": "Keine der angegebenen Slots sind in der Session vorhanden."}, status_code=400)
+        return JSONResponse(
+            {"error": "Keine der angegebenen Slots sind in der Session vorhanden."},
+            status_code=400,
+        )
 
     all_results:   list = []
     slots_checked: int  = 0
@@ -546,14 +790,12 @@ async def project_checking_run(request: Request, project_id: str):
         if not os.path.exists(ifc_path):
             slot_errors.append(f"Slot {slot}: Datei nicht gefunden.")
             continue
-
         file_label = get_ifc_label(session_id, slot, fallback=f"model_{slot}.ifc")
         try:
             model = ifcopenshell.open(ifc_path)
         except Exception as exc:
             slot_errors.append(f"Slot {slot}: IFC konnte nicht geöffnet werden – {exc}")
             continue
-
         results = run_rules_on_model(model, slot=slot, file_label=file_label, rules=rules)
         all_results.extend(results)
         slots_checked += 1
@@ -585,19 +827,13 @@ def project_checking_export(
     slots: str = Query(default=""),
     rules: str = Query(default=""),
 ):
-    """Ergebnisse als JSON-Datei exportieren."""
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return Response(content="Projekt nicht gefunden.", status_code=404)
     if not session_exists(session_id):
         return Response(content="Projekt-Session nicht gefunden.", status_code=404)
 
-    slot_list: list[int] = []
-    for s in slots.split(","):
-        s = s.strip()
-        if s.isdigit():
-            slot_list.append(int(s))
-
+    slot_list = [int(s) for s in slots.split(",") if s.strip().isdigit()]
     rule_list = [r.strip() for r in rules.split(",") if r.strip()]
 
     if not slot_list:
@@ -635,4 +871,43 @@ def project_checking_export(
         content=content,
         media_type="application/json",
         headers={"Content-Disposition": 'attachment; filename="rulecheck_export.json"'},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy-Redirects  /viewer/rulecheck/*
+# ─────────────────────────────────────────────────────────────────────────────
+
+@project_rulecheck_router.get("/viewer/rulecheck/")
+def viewer_rulecheck_legacy(
+    project_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
+    if project_id:
+        return RedirectResponse(f"/projects/{project_id}/checking", status_code=302)
+    return HTMLResponse(
+        "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
+        "<title>Rule-Check verschoben</title></head>"
+        "<body style='font-family:sans-serif;padding:40px;background:#0e0e1a;color:#d0dce8'>"
+        "<h2>Rule-Check ist jetzt ein eigenständiges Projektmodul</h2>"
+        "<p style='color:#4a6080;margin-top:8px'>Öffne ein Projekt und wechsle zum Tab "
+        "<strong>Checking</strong>.</p>"
+        "<p style='margin-top:20px'><a href='/' style='color:#4fc3f7'>Zur Projektübersicht</a></p>"
+        "</body></html>"
+    )
+
+
+@project_rulecheck_router.post("/viewer/rulecheck/run/")
+async def viewer_rulecheck_run_legacy():
+    return JSONResponse(
+        {"error": "Diese API wurde nach /projects/{project_id}/checking/run verschoben."},
+        status_code=410,
+    )
+
+
+@project_rulecheck_router.get("/viewer/rulecheck/export/")
+def viewer_rulecheck_export_legacy():
+    return Response(
+        content="Dieser Endpunkt wurde nach /projects/{project_id}/checking/export verschoben.",
+        status_code=410,
     )
