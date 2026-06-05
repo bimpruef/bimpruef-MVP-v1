@@ -4,6 +4,8 @@ project_clash.py – eigenständiges Projektmodul Clash-Analyse
 Die Clash-Analyse ist kein Bestandteil des Viewers mehr. Sie arbeitet
 projektbasiert, lädt IFC/IFCZIP-Dateien aus dem Documents-Modul in den
 technischen Viewer-Cache und speichert ausgewählte Clash-Zeilen als Issues.
+
+Hinweis: clash.py wurde in dieses Modul integriert und kann gelöscht werden.
 """
 
 import html
@@ -12,6 +14,7 @@ import os
 from urllib.parse import quote_plus
 
 import ifcopenshell
+import ifcopenshell.geom
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -20,13 +23,147 @@ from app.document_storage import (
     list_project_ifc_documents,
     prepare_viewer_session_from_project_documents,
 )
-from app.extractors import get_candidate_products, get_psets_safe
+from app.extractors import apply_filters, extract_element_data, get_candidate_products, get_psets_safe
 from app.issue_storage import save_clash_issues
 from app.project_storage import get_or_create_project_session, get_project
 from app.storage import get_ifc_label, get_ifc_path, get_session_slots, session_exists
 
 project_clash_router = APIRouter()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clash-Logik (aus clash.py zusammengeführt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_elements_from_slots(session_id: str, slots: list) -> list:
+    """Alle Kandidaten-Elemente aus den angegebenen Slots laden."""
+    all_elements = []
+    for slot in slots:
+        path = get_ifc_path(session_id, slot)
+        if not os.path.exists(path):
+            continue
+        label = get_ifc_label(session_id, slot)
+        try:
+            model = ifcopenshell.open(path)
+            for elem in get_candidate_products(model):
+                data = extract_element_data(elem, file_label=label)
+                data["slot"] = slot
+                data["_ifc_element"] = elem
+                all_elements.append(data)
+        except Exception:
+            continue
+    return all_elements
+
+
+def get_group_elements(session_id: str, selected_slots: list, filters: list) -> list:
+    """Elemente aus Slots laden und filtern."""
+    elements = _load_elements_from_slots(session_id, selected_slots)
+    return apply_filters(elements, filters)
+
+
+def _make_geometry_settings() -> ifcopenshell.geom.settings:
+    settings = ifcopenshell.geom.settings()
+    settings.set(settings.USE_WORLD_COORDS, True)
+    return settings
+
+
+def _get_bbox(element, settings) -> dict | None:
+    try:
+        shape = ifcopenshell.geom.create_shape(settings, element)
+        verts = shape.geometry.verts
+        if not verts or len(verts) < 3:
+            return None
+        xs = verts[0::3]
+        ys = verts[1::3]
+        zs = verts[2::3]
+        return {
+            "min_x": min(xs), "min_y": min(ys), "min_z": min(zs),
+            "max_x": max(xs), "max_y": max(ys), "max_z": max(zs),
+        }
+    except Exception:
+        return None
+
+
+def _bboxes_intersect(b1: dict, b2: dict, tolerance: float = 0.0) -> bool:
+    if b1 is None or b2 is None:
+        return False
+    return (
+        b1["min_x"] <= b2["max_x"] + tolerance
+        and b1["max_x"] >= b2["min_x"] - tolerance
+        and b1["min_y"] <= b2["max_y"] + tolerance
+        and b1["max_y"] >= b2["min_y"] - tolerance
+        and b1["min_z"] <= b2["max_z"] + tolerance
+        and b1["max_z"] >= b2["min_z"] - tolerance
+    )
+
+
+def compare_element_groups_for_clashes(
+    group_a: list,
+    group_b: list,
+    tolerance: float = 0.0,
+) -> list:
+    """AABB-basierte Clash-Erkennung zwischen zwei Element-Gruppen."""
+    settings = _make_geometry_settings()
+
+    def _attach_bboxes(group: list) -> list:
+        result = []
+        for elem_data in group:
+            ifc_elem = elem_data.get("_ifc_element")
+            if ifc_elem is None:
+                continue
+            bbox = _get_bbox(ifc_elem, settings)
+            if bbox is not None:
+                result.append((elem_data, bbox))
+        return result
+
+    group_a_bboxes = _attach_bboxes(group_a)
+    group_b_bboxes = _attach_bboxes(group_b)
+
+    clashes: list = []
+    seen_pairs: set = set()
+
+    for data_a, bbox_a in group_a_bboxes:
+        gid_a = data_a.get("global_id") or ""
+        slot_a = data_a.get("slot") or 0
+
+        for data_b, bbox_b in group_b_bboxes:
+            gid_b = data_b.get("global_id") or ""
+            slot_b = data_b.get("slot") or 0
+
+            if gid_a == gid_b and slot_a == slot_b:
+                continue
+
+            if slot_a < slot_b or (slot_a == slot_b and gid_a <= gid_b):
+                pair_key = (gid_a, slot_a, gid_b, slot_b)
+            else:
+                pair_key = (gid_b, slot_b, gid_a, slot_a)
+
+            if pair_key in seen_pairs:
+                continue
+
+            if _bboxes_intersect(bbox_a, bbox_b, tolerance=tolerance):
+                seen_pairs.add(pair_key)
+                clashes.append({
+                    "type_1":       data_a.get("type", ""),
+                    "name_1":       data_a.get("name", ""),
+                    "global_id_1":  gid_a,
+                    "express_id_1": data_a.get("express_id", ""),
+                    "file_label_1": data_a.get("file_label", ""),
+                    "slot_1":       slot_a,
+                    "type_2":       data_b.get("type", ""),
+                    "name_2":       data_b.get("name", ""),
+                    "global_id_2":  gid_b,
+                    "express_id_2": data_b.get("express_id", ""),
+                    "file_label_2": data_b.get("file_label", ""),
+                    "slot_2":       slot_b,
+                })
+
+    return clashes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _e(value) -> str:
     return html.escape(str(value or ""))
@@ -62,12 +199,17 @@ def _fmt_size(num: int) -> str:
     return f"{n:.1f} GB"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Documents-Panel
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _load_documents_panel(account: dict, project_id: str, slots: list[int], saved: str = "", error: str = "") -> str:
     docs = list_project_ifc_documents(account["account_id"], project_id)
     slot_hint = "Keine Modelle in den Clash-Cache geladen."
     if slots:
         slot_hint = "Aktuell geladene Clash-Modelle: " + ", ".join(
-            f"Slot {s}: {_e(get_ifc_label(get_or_create_project_session(account['account_id'], project_id), s))}" for s in slots
+            f"Slot {s}: {_e(get_ifc_label(get_or_create_project_session(account['account_id'], project_id), s))}"
+            for s in slots
         )
 
     flash = ""
@@ -121,6 +263,10 @@ def _load_documents_panel(account: dict, project_id: str, slots: list[int], save
     </div>
     """
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Haupt-UI
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _clash_page_html(project: dict, account: dict, session_id: str, saved: str = "", error: str = "") -> HTMLResponse:
     from app.projects import _page, _project_subnav, _topbar_global
@@ -315,6 +461,10 @@ loadPsetKeys('a'); loadPsetKeys('b');
     return _page(f"{project['project_name']} – Clash", body)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Routen
+# ─────────────────────────────────────────────────────────────────────────────
+
 @project_clash_router.get("/projects/{project_id}/clash", response_class=HTMLResponse)
 def project_clash_page(request: Request, project_id: str, saved: str = Query(default=""), error: str = Query(default="")):
     account, project, session_id = _load_context(request, project_id)
@@ -391,8 +541,6 @@ async def project_clash_run(request: Request, project_id: str):
         if not slots_b:
             return JSONResponse({"error": "Gruppe B: kein Modell ausgewählt."}, status_code=400)
 
-        from app.clash import compare_element_groups_for_clashes, get_group_elements
-
         elements_a = get_group_elements(session_id, slots_a, filters_a)
         elements_b = get_group_elements(session_id, slots_b, filters_b)
         clashes = compare_element_groups_for_clashes(elements_a, elements_b, tolerance=tolerance)
@@ -426,7 +574,4 @@ def project_clash_detail(
     account, project, session_id = _load_context(request, project_id)
     if not project:
         return RedirectResponse("/", status_code=302)
-    return RedirectResponse(
-        f"/projects/{_e(project_id)}/view",
-        status_code=302
-    )
+    return RedirectResponse(f"/projects/{_e(project_id)}/view", status_code=302)
