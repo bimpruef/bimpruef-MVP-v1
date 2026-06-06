@@ -429,7 +429,7 @@ async def list_export_excel(request: Request, project_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @list_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
-def project_list(request: Request, project_id: str):
+def project_list(request: Request, project_id: str, saved: str = "", error: str = ""):
     try:
         account, project = _load_context(request, project_id)
     except Exception:
