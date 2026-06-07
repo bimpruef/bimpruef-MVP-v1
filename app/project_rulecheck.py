@@ -553,12 +553,7 @@ def _checking_page(project: dict, account: dict) -> HTMLResponse:
         text-transform:uppercase;letter-spacing:.8px;
         border-bottom:1px solid var(--border);flex-shrink:0;
         display:flex;align-items:center;justify-content:space-between">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span>✓ Rule-Check</span>
-          <span id="cache-badge" style="display:none;font-size:9px;padding:2px 6px;
-            background:#0a2a3e;color:#4fc3f7;border:1px solid #1a4a6e;
-            border-radius:8px;font-weight:600">🔄 Cache</span>
-        </div>
+        <span>✓ Rule-Check</span>
         <button id="btn-run" class="btn btn-primary"
           style="font-size:11px;padding:3px 14px">▶ Prüfung starten</button>
       </div>
@@ -742,15 +737,8 @@ function clearCache() {{
 }}
 
 function showCacheBadge(visible) {{
-  const badge    = document.getElementById("cache-badge");
   const clearWrap = document.getElementById("cache-clear-wrap");
-  if (visible) {{
-    badge.style.display    = "inline";
-    clearWrap.style.display = "block";
-  }} else {{
-    badge.style.display    = "none";
-    clearWrap.style.display = "none";
-  }}
+  if (clearWrap) clearWrap.style.display = visible ? "block" : "none";
 }}
 
 // ── UI Helpers ────────────────────────────────────────────────────────────
@@ -988,6 +976,10 @@ document.getElementById("btn-clear-cache").addEventListener("click", () => {{
     `${{_allResults.length}} Befunde (Cache ${{ageLabel}} alt)`;
 
   showCacheBadge(true);
+
+  // Sofort nach oben scrollen damit Ergebnisse direkt sichtbar sind
+  const tableWrap = document.getElementById("table-wrap");
+  if (tableWrap) tableWrap.scrollTop = 0;
 }})();
 
 }})();
