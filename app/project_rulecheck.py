@@ -966,9 +966,16 @@ document.getElementById("btn-clear-cache").addEventListener("click", () => {{
     exportBtn.style.display = "";
   }}
 
+  // placeholder und loading verstecken, Tabelle sofort zeigen
   document.getElementById("loading").style.display = "none";
+  document.getElementById("placeholder").style.display = "none";
   document.getElementById("result-table").style.display = "";
+
   filterSev(cached.filter || "all");
+
+  // Tabelle nach oben scrollen
+  const tableWrap = document.getElementById("table-wrap");
+  if (tableWrap) tableWrap.scrollTop = 0;
 
   const age = Math.round((Date.now() - (cached.ts || 0)) / 1000);
   const ageLabel = age < 60 ? `${{age}}s` : `${{Math.round(age/60)}}min`;
@@ -976,10 +983,6 @@ document.getElementById("btn-clear-cache").addEventListener("click", () => {{
     `${{_allResults.length}} Befunde (Cache ${{ageLabel}} alt)`;
 
   showCacheBadge(true);
-
-  // Sofort nach oben scrollen damit Ergebnisse direkt sichtbar sind
-  const tableWrap = document.getElementById("table-wrap");
-  if (tableWrap) tableWrap.scrollTop = 0;
 }})();
 
 }})();
