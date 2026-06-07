@@ -49,7 +49,7 @@ from app.project_rulecheck import project_rulecheck_router
 from app.project_viewer import project_viewer_router
 from app.r2_storage import download_file_from_r2, r2_enabled, upload_file_to_r2
 from app.storage import cleanup_old_sessions, delete_session
-from app.project_storage import get_project_session, list_projects
+from app.project_storage import list_projects
 
 from app.templates import (
     _base_styles as _bp_base_styles,
@@ -202,39 +202,3 @@ def impressum(request: Request):
 def datenschutz(request: Request):
     content = render_datenschutz_module(back_link="/")
     return _build_page("Datenschutz – BIMPruef", content)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Session-Löschung – beim Schließen des Browser-Tabs
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.delete("/session/delete/")
-async def session_delete_endpoint(request: Request):
-    """
-    Löscht eine temporäre Nicht-Projekt-Session sofort.
-    Projekt-Sessions werden hier nicht gelöscht.
-    """
-    try:
-        body = await request.json()
-        session_id = str(body.get("session_id", "")).strip()
-    except Exception:
-        session_id = request.query_params.get("session_id", "").strip()
-
-    if session_id:
-        try:
-            user = get_current_user_optional(request)
-            account_id = user["user_id"] if user else None
-            project_sessions: set[str] = set()
-
-            if account_id:
-                for project in list_projects(account_id):
-                    pid = get_project_session(account_id, project["project_id"])
-                    if pid:
-                        project_sessions.add(pid)
-        except Exception:
-            project_sessions = set()
-
-        if session_id not in project_sessions:
-            delete_session(session_id)
-
-    return Response(status_code=204)
