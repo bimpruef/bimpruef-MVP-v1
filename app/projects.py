@@ -35,7 +35,6 @@ from app.project_storage import (
     get_project,
     update_project,
     delete_project,
-    get_or_create_project_session,
     get_project_model_count,
     get_project_document_count,
 )
@@ -52,7 +51,6 @@ from app.document_storage import (
     list_documents,
     list_folders,
     list_project_ifc_documents,
-    prepare_viewer_session_from_project_documents,
     save_project_document,
 )
 
@@ -554,7 +552,6 @@ def project_dashboard(request: Request, project_id: str):
              if status == "active"
              else f'<span class="badge badge-inactive">{_e(status)}</span>')
 
-    sid = get_or_create_project_session(account_id, project_id)
 
     stat_cards = (
         f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:20px">'
