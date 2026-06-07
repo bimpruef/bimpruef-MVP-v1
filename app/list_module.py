@@ -7,11 +7,16 @@ list_module.py – BIMPruef Element-Listen-Modul (Direct-from-Documents)
 - دکمه «نمایش» → فایل از R2 لود، پردازش، JSON برمی‌گردد
 - بدون session_id، بدون slot
 
+sessionStorage cache (مثل clash module):
+- نتایج، فیلترها، ستون‌ها و انتخاب فایل‌ها در sessionStorage ذخیره می‌شن
+- هنگام بازگشت به صفحه بدون درخواست جدید restore می‌شن
+- QuotaExceededError handling: اگه داده بزرگ بود فقط metadata ذخیره می‌شه
+
 Routen:
   GET  /projects/{project_id}/list              → Haupt-UI
   POST /projects/{project_id}/list/run          → JSON-API: Element laden + filtern
   GET  /projects/{project_id}/list/pset-keys    → Pset-Schlüssel für Datei
-  GET  /projects/{project_id}/list/export       → Excel-Download
+  POST /projects/{project_id}/list/export       → Excel-Download
 """
 
 import html as _html
@@ -87,7 +92,7 @@ def _load_context(request: Request, project_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IFC از R2 لود کن (مثل project_clash.py)
+# IFC از R2 لود کن
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _open_ifc_from_document(account_id: str, project_id: str, document_id: str):
@@ -206,7 +211,6 @@ async def list_run_api(request: Request, project_id: str):
     columns = body.get("columns", [])
     include_psets = bool(body.get("include_psets", False))
 
-    # بررسی آیا pset در فیلتر یا ستون هست
     needs_psets = include_psets or any(
         (isinstance(f, dict) and str(f.get("field", "")).startswith("pset:"))
         for f in filters
@@ -238,7 +242,6 @@ async def list_run_api(request: Request, project_id: str):
                 for k in _flatten_psets(elem.get("psets", {})).keys():
                     all_pset_keys.add(f"pset:{k}")
 
-        # ردیف‌های خروجی
         selected_pset_cols = [c for c in columns if isinstance(c, str) and c.startswith("pset:")]
 
         for elem in filtered:
@@ -267,7 +270,7 @@ async def list_run_api(request: Request, project_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pset-کلیدها برای یک فایل (برای Filter-Dropdown)
+# Pset-کلیدها برای یک فایل
 # ─────────────────────────────────────────────────────────────────────────────
 
 @list_router.get("/projects/{project_id}/list/pset-keys")
@@ -294,7 +297,6 @@ def list_pset_keys(
 
 @list_router.post("/projects/{project_id}/list/export")
 async def list_export_excel(request: Request, project_id: str):
-    """همان منطق /run اما خروجی Excel."""
     account, project = _load_context(request, project_id)
     if not project:
         return Response(content="Projekt nicht gefunden.", status_code=404)
@@ -358,7 +360,6 @@ async def list_export_excel(request: Request, project_id: str):
         except Exception:
             continue
 
-    # Excel باسازی
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "BIMPruef Elementliste"
@@ -429,7 +430,8 @@ async def list_export_excel(request: Request, project_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @list_router.get("/projects/{project_id}/list", response_class=HTMLResponse)
-def project_list(request: Request, project_id: str, saved: str = "", error: str = ""):
+def project_list(request: Request, project_id: str,
+                 saved: str = Query(default=""), error: str = Query(default="")):
     try:
         account, project = _load_context(request, project_id)
     except Exception:
@@ -481,7 +483,6 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
     project_id = project["project_id"]
     pid = _e(project_id)
 
-    # اگر هیچ فایلی نیست
     if not docs:
         body = f"""
         {_topbar_global(account)}
@@ -507,6 +508,7 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
         folder = _e(d.get("folder_path") or "Root")
         doc_id = _e(d["document_id"])
         fname = _e(d["original_filename"])
+        # اولین فایل پیش‌فرض checked — restore از sessionStorage اینو override می‌کنه
         checked = "checked" if i == 0 else ""
         file_checkboxes += f"""
         <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;
@@ -544,8 +546,13 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
         display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
         border-bottom:1px solid var(--border)">
         <span>📋 Elementliste</span>
-        <button id="btn-run" class="btn btn-primary"
-          style="font-size:11px;padding:3px 12px">▶ Laden</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span id="cache-badge" style="display:none;font-size:9px;padding:2px 6px;
+            background:#0a2a3e;color:#4fc3f7;border:1px solid #1a4a6e;
+            border-radius:8px;font-weight:600">🔄 Cache</span>
+          <button id="btn-run" class="btn btn-primary"
+            style="font-size:11px;padding:3px 12px">▶ Laden</button>
+        </div>
       </div>
 
       <div style="flex:1;overflow-y:auto;padding:10px">
@@ -606,6 +613,15 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
           </div>
         </div>
 
+        <!-- دکمه پاک کردن cache -->
+        <div id="cache-clear-wrap" style="display:none;margin-bottom:10px">
+          <button id="btn-clear-cache" class="btn"
+            style="width:100%;font-size:11px;padding:6px;
+            color:var(--muted);border-color:var(--border)">
+            🗑 Cache leeren &amp; neu laden
+          </button>
+        </div>
+
       </div>
 
       <!-- دکمه Export -->
@@ -664,6 +680,12 @@ const RUN_URL     = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/run`;
 const PSET_URL    = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/pset-keys`;
 const EXPORT_URL  = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/export`;
 
+// ── sessionStorage keys ───────────────────────────────────────────────────
+// مثل clash module: per-project key
+const STATE_KEY    = "bp_list_v1_" + PROJECT_ID;  // داده کامل (rows + meta)
+const META_KEY     = "bp_list_meta_v1_" + PROJECT_ID;  // فقط metadata (fallback)
+
+// ── State ─────────────────────────────────────────────────────────────────
 let allRows       = [];
 let psetKeys      = [];
 let filters       = [];
@@ -698,6 +720,7 @@ const OPERATORS = [
   {{key:"ends_with",    label:"endet mit"}},
 ];
 
+// DOM refs
 const filterList       = document.getElementById("filter-list");
 const noFiltersHint    = document.getElementById("no-filters-hint");
 const columnList       = document.getElementById("column-list");
@@ -711,10 +734,104 @@ const statusCols       = document.getElementById("status-cols");
 const btnRun           = document.getElementById("btn-run");
 const btnExport        = document.getElementById("btn-export");
 const btnLoadPsets     = document.getElementById("btn-load-psets");
+const cacheBadge       = document.getElementById("cache-badge");
+const cacheClearWrap   = document.getElementById("cache-clear-wrap");
 
 function esc(s) {{
   return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
     .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}}
+
+// ── sessionStorage helpers ────────────────────────────────────────────────
+
+/**
+ * ذخیره state در sessionStorage
+ * اگه QuotaExceededError بده فقط metadata ذخیره می‌کنه (بدون rows)
+ */
+function saveToCache(rows, psetKeysArr, filtersArr, selectedColsArr, docIds) {{
+  const meta = {{
+    total:       rows.length,
+    pset_keys:   psetKeysArr,
+    filters:     filtersArr,
+    selected_cols: selectedColsArr,
+    doc_ids:     docIds,
+    ts:          Date.now(),
+    has_rows:    false,
+  }};
+
+  // اول سعی کن داده کامل رو ذخیره کنی
+  try {{
+    const full = JSON.stringify({{
+      ...meta,
+      has_rows: true,
+      rows:     rows,
+    }});
+    sessionStorage.setItem(STATE_KEY, full);
+    sessionStorage.removeItem(META_KEY);
+    showCacheBadge(true);
+    return;
+  }} catch (e) {{
+    // QuotaExceededError یا مشکل دیگه
+    if (e.name !== "QuotaExceededError" && !String(e).includes("quota")) {{
+      console.warn("sessionStorage error:", e);
+    }}
+  }}
+
+  // fallback: فقط metadata ذخیره کن (بدون rows)
+  try {{
+    sessionStorage.setItem(META_KEY, JSON.stringify(meta));
+    sessionStorage.removeItem(STATE_KEY);
+    showCacheBadge(false); // cache هست ولی rows نیستن
+  }} catch (e2) {{
+    console.warn("sessionStorage metadata save failed:", e2);
+  }}
+}}
+
+function loadFromCache() {{
+  // اول STATE_KEY (داده کامل)
+  try {{
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (raw) {{
+      const data = JSON.parse(raw);
+      if (data && data.has_rows && Array.isArray(data.rows)) {{
+        return {{type: "full", data}};
+      }}
+    }}
+  }} catch (_) {{}}
+
+  // بعد META_KEY (فقط metadata)
+  try {{
+    const raw = sessionStorage.getItem(META_KEY);
+    if (raw) {{
+      const data = JSON.parse(raw);
+      if (data) return {{type: "meta", data}};
+    }}
+  }} catch (_) {{}}
+
+  return null;
+}}
+
+function clearCache() {{
+  try {{ sessionStorage.removeItem(STATE_KEY); }} catch (_) {{}}
+  try {{ sessionStorage.removeItem(META_KEY); }} catch (_) {{}}
+  showCacheBadge(null);
+}}
+
+function showCacheBadge(hasRows) {{
+  if (hasRows === null) {{
+    cacheBadge.style.display = "none";
+    cacheClearWrap.style.display = "none";
+    return;
+  }}
+  cacheBadge.style.display = "inline";
+  cacheClearWrap.style.display = "block";
+  if (hasRows) {{
+    cacheBadge.textContent = "🔄 Cache";
+    cacheBadge.title = "نتایج از sessionStorage بازیابی شدن";
+  }} else {{
+    cacheBadge.textContent = "⚠ Cache (بدون داده)";
+    cacheBadge.title = "Cache فقط metadata داره — برای داده کامل دوباره لود کن";
+  }}
 }}
 
 // ── فیلدهای فیلتر ────────────────────────────────────────────────────────
@@ -743,7 +860,7 @@ function addFilter(fieldKey, operator, value) {{
 
   const fieldOpts = buildFieldOptions(psetKeys);
   const opOpts = OPERATORS.map(o =>
-    `<option value="${{o.key}}" ${{o.key===operator?"selected":""}}>${{o.label}}</option>`
+    `<option value="${{o.key}}" ${{o.key===(operator||"contains")?"selected":""}}>${{o.label}}</option>`
   ).join("");
 
   wrapper.innerHTML = `
@@ -796,7 +913,7 @@ function syncFilters() {{
 }}
 
 // ── ستون‌ها ───────────────────────────────────────────────────────────────
-function buildColumnUI() {{
+function buildColumnUI(preselected) {{
   colDefs = [...BASE_COLS];
   psetKeys.forEach(k => {{
     const lbl = k.startsWith("pset:") ? k.slice(5) : k;
@@ -809,7 +926,7 @@ function buildColumnUI() {{
   baseSection.style.cssText = "margin-bottom:8px";
   baseSection.innerHTML = `<div style="font-size:10px;color:var(--muted);margin-bottom:4px;
     text-transform:uppercase;letter-spacing:.4px">Basis-Felder</div>`;
-  BASE_COLS.forEach(col => baseSection.appendChild(makeColRow(col)));
+  BASE_COLS.forEach(col => baseSection.appendChild(makeColRow(col, preselected)));
   columnList.appendChild(baseSection);
 
   if (psetKeys.length) {{
@@ -818,7 +935,7 @@ function buildColumnUI() {{
       text-transform:uppercase;letter-spacing:.4px">Eigenschaften (Psets)</div>`;
     psetKeys.forEach(k => {{
       const lbl = k.startsWith("pset:") ? k.slice(5) : k;
-      psetSection.appendChild(makeColRow({{key:k, label:lbl}}));
+      psetSection.appendChild(makeColRow({{key:k, label:lbl}}, preselected));
     }});
     columnList.appendChild(psetSection);
   }}
@@ -826,12 +943,18 @@ function buildColumnUI() {{
   syncColumns();
 }}
 
-function makeColRow(col) {{
+function makeColRow(col, preselected) {{
+  // اگه preselected داریم از اون استفاده کن، وگرنه همه checked باشن
+  const isChecked = preselected
+    ? preselected.includes(col.key)
+    : true;
+
   const div = document.createElement("label");
   div.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;" +
     "padding:3px 4px;border-radius:4px;font-size:11px";
   div.innerHTML = `
-    <input type="checkbox" class="col-chk" value="${{esc(col.key)}}" checked
+    <input type="checkbox" class="col-chk" value="${{esc(col.key)}}"
+      ${{isChecked ? "checked" : ""}}
       style="accent-color:var(--accent);width:12px;height:12px;flex-shrink:0">
     <span style="color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
       title="${{esc(col.label)}}">${{esc(col.label)}}</span>
@@ -845,6 +968,14 @@ function makeColRow(col) {{
 function syncColumns() {{
   selectedCols = [...document.querySelectorAll(".col-chk:checked")].map(c => c.value);
   statusCols.textContent = selectedCols.length + " Spalten ausgewählt";
+}}
+
+// ── restore document selection از cache ───────────────────────────────────
+function restoreDocSelection(docIds) {{
+  if (!docIds || !docIds.length) return;
+  document.querySelectorAll(".doc-chk").forEach(cb => {{
+    cb.checked = docIds.includes(cb.value);
+  }});
 }}
 
 // ── لود داده (POST به /run) ───────────────────────────────────────────────
@@ -862,6 +993,7 @@ async function loadData() {{
   btnRun.textContent = "⏳ …";
   statusTotal.textContent = "Lade Daten aus R2 …";
   statusFiltered.textContent = "";
+  clearCache();  // cache قدیمی رو پاک کن
 
   const needsPsets = selectedCols.some(c => c.startsWith("pset:")) ||
                      filters.some(f => f.field && f.field.startsWith("pset:"));
@@ -882,11 +1014,10 @@ async function loadData() {{
 
     allRows = data.rows || [];
 
-    // Pset-Schlüssel aktualisieren falls zurückgegeben
-    if (data.pset_keys && data.pset_keys.length && !psetKeys.length) {{
+    // Pset-Schlüssel aktualisieren
+    if (data.pset_keys && data.pset_keys.length) {{
       psetKeys = data.pset_keys;
-      buildColumnUI();
-      // Filter-Dropdowns aktualisieren
+      buildColumnUI(selectedCols.length ? selectedCols : null);
       document.querySelectorAll(".filter-field").forEach(sel => {{
         const cur = sel.value;
         sel.innerHTML = buildFieldOptions(psetKeys);
@@ -903,6 +1034,9 @@ async function loadData() {{
 
     syncColumns();
     renderTable(allRows);
+
+    // ── cache ذخیره کن ─────────────────────────────────────────────────
+    saveToCache(allRows, psetKeys, filters, selectedCols, docIds);
 
   }} catch(e) {{
     statusTotal.textContent = "Fehler: " + e.message;
@@ -932,13 +1066,6 @@ function renderTable(rows) {{
       return val !== undefined && val !== null && String(val).trim() !== "";
     }});
   }});
-
-  if (!visibleCols.length && rows.length) {{
-    // همه ستون‌ها را نشان بده
-    const allActiveCols = activeCols;
-    _renderTableWith(rows, allActiveCols);
-    return;
-  }}
 
   _renderTableWith(rows, visibleCols.length ? visibleCols : activeCols);
 }}
@@ -1001,7 +1128,7 @@ async function loadPsetKeys() {{
   }}
 
   psetKeys = [...allKeys].sort();
-  buildColumnUI();
+  buildColumnUI(selectedCols.length ? selectedCols : null);
 
   document.querySelectorAll(".filter-field").forEach(sel => {{
     const cur = sel.value;
@@ -1075,19 +1202,77 @@ btnRun.addEventListener("click", loadData);
 btnExport.addEventListener("click", doExport);
 btnLoadPsets.addEventListener("click", loadPsetKeys);
 
+document.getElementById("btn-clear-cache").addEventListener("click", () => {{
+  clearCache();
+  allRows = [];
+  tablePlaceholder.style.display = "flex";
+  tablePlaceholder.innerHTML = `
+    <svg width="40" height="40" fill="none" stroke="var(--muted)" stroke-width="1.5" viewBox="0 0 24 24">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+    </svg>
+    <div style="text-align:center">
+      <div style="font-size:14px;color:var(--text);margin-bottom:6px">Cache geleert</div>
+      <div style="font-size:12px;color:var(--muted)">
+        Klicke <strong style="color:var(--accent)">▶ Laden</strong> um neu zu laden.
+      </div>
+    </div>`;
+  resultTable.style.display = "none";
+  statusTotal.textContent = "Cache geleert – neu laden";
+  statusFiltered.textContent = "";
+}});
+
 document.addEventListener("keydown", e => {{
   if (e.key === "Enter" && e.target.classList.contains("filter-val")) loadData();
 }});
 
-// تغییر انتخاب فایل → Pset‌ها را ریست کن
-document.querySelectorAll(".doc-chk").forEach(cb => {{
-  cb.addEventListener("change", () => {{
-    // اگر Pset‌های قدیمی مال فایل دیگری بود ریست نکن - فقط hint
-  }});
-}});
+// ── اول بار: column UI بساز ──────────────────────────────────────────────
+buildColumnUI(null);
 
-// ── اول بار ──────────────────────────────────────────────────────────────
-buildColumnUI();
+// ── restore از sessionStorage (مثل clash module) ─────────────────────────
+(function restore() {{
+  const cached = loadFromCache();
+  if (!cached) return;
+
+  const {{ type, data }} = cached;
+
+  // restore انتخاب فایل‌ها
+  if (data.doc_ids && data.doc_ids.length) {{
+    restoreDocSelection(data.doc_ids);
+  }}
+
+  // restore فیلترها
+  if (data.filters && data.filters.length) {{
+    data.filters.forEach(f => {{
+      addFilter(f.field, f.operator, f.value);
+    }});
+    syncFilters();
+  }}
+
+  // restore pset keys و column UI
+  if (data.pset_keys && data.pset_keys.length) {{
+    psetKeys = data.pset_keys;
+  }}
+  buildColumnUI(data.selected_cols || null);
+
+  if (type === "full" && data.rows && data.rows.length) {{
+    // داده کامل: مستقیم render کن
+    allRows = data.rows;
+    syncColumns();
+    renderTable(allRows);
+
+    const age = Math.round((Date.now() - (data.ts || 0)) / 1000);
+    const ageLabel = age < 60 ? `${{age}}s` : `${{Math.round(age/60)}}min`;
+    statusTotal.textContent = `${{allRows.length}} Elemente (Cache ${{ageLabel}} alt)`;
+    statusFiltered.textContent = "";
+    showCacheBadge(true);
+
+  }} else if (type === "meta") {{
+    // فقط metadata: اطلاعات نشون بده ولی جدول خالی
+    statusTotal.textContent =
+      `Cache: ${{data.total}} Elemente (Daten zu groß für Cache – bitte neu laden)`;
+    showCacheBadge(false);
+  }}
+}})();
 
 }})();
 </script>
