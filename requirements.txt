@@ -1,7 +1,7 @@
 fastapi>=0.136.3
 uvicorn>=0.48.0
 ifcopenshell>=0.8.5
-python-multipart>=0.0.29
+python-multipart>=0.0.32
 httpx>=0.28.1
 openpyxl>=3.1.5
 sqlalchemy>=2.0.50
