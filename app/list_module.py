@@ -96,10 +96,6 @@ def _load_context(request: Request, project_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _open_ifc_from_document(account_id: str, project_id: str, document_id: str):
-    """
-    IFC/IFCZIP را مستقیم از R2 لود می‌کند.
-    Returns: (model, label)
-    """
     if not (r2_enabled() and download_file_from_r2):
         raise ValueError("Cloudflare R2 ist nicht konfiguriert.")
 
@@ -147,7 +143,6 @@ def _open_ifc_from_document(account_id: str, project_id: str, document_id: str):
 
 def _extract_and_filter(model, file_label: str, document_id: str,
                         filters: list, include_psets: bool) -> list:
-    """المان‌ها را از مدل استخراج و فیلتر می‌کند."""
     all_elements = []
     for elem in get_candidate_products(model):
         if include_psets:
@@ -171,7 +166,6 @@ def _extract_and_filter(model, file_label: str, document_id: str,
 
 
 def _collect_pset_keys_from_model(model) -> list:
-    """همه Pset-کلیدهای یک مدل را جمع می‌کند."""
     keys: set[str] = set()
     for elem in get_candidate_products(model):
         psets = get_psets_safe(elem)
@@ -183,20 +177,11 @@ def _collect_pset_keys_from_model(model) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JSON-API: المان‌ها لود و فیلتر کن
+# JSON-API
 # ─────────────────────────────────────────────────────────────────────────────
 
 @list_router.post("/projects/{project_id}/list/run")
 async def list_run_api(request: Request, project_id: str):
-    """
-    Body (JSON):
-    {
-      "document_ids": ["id1", "id2", ...],
-      "filters": [...],
-      "columns": [...],
-      "include_psets": true|false
-    }
-    """
     account, project = _load_context(request, project_id)
     if not project:
         return JSONResponse({"error": "Projekt nicht gefunden."}, status_code=404)
@@ -270,7 +255,7 @@ async def list_run_api(request: Request, project_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pset-کلیدها برای یک فایل
+# Pset-کلیدها
 # ─────────────────────────────────────────────────────────────────────────────
 
 @list_router.get("/projects/{project_id}/list/pset-keys")
@@ -501,14 +486,12 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
         </div>"""
         return _page(f"{project['project_name']} – Liste", body)
 
-    # گزینه‌های فایل برای انتخاب
     file_checkboxes = ""
     for i, d in enumerate(docs):
         size_label = _fmt_size(d.get("file_size", 0))
         folder = _e(d.get("folder_path") or "Root")
         doc_id = _e(d["document_id"])
         fname = _e(d["original_filename"])
-        # اولین فایل پیش‌فرض checked — restore از sessionStorage اینو override می‌کنه
         checked = "checked" if i == 0 else ""
         file_checkboxes += f"""
         <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;
@@ -547,9 +530,6 @@ def _render_list_page(account: dict, project: dict, docs: list) -> HTMLResponse:
         border-bottom:1px solid var(--border)">
         <span>📋 Elementliste</span>
         <div style="display:flex;gap:6px;align-items:center">
-          <span id="cache-badge" style="display:none;font-size:9px;padding:2px 6px;
-            background:#0a2a3e;color:#4fc3f7;border:1px solid #1a4a6e;
-            border-radius:8px;font-weight:600">🔄 Cache</span>
           <button id="btn-run" class="btn btn-primary"
             style="font-size:11px;padding:3px 12px">▶ Laden</button>
         </div>
@@ -680,12 +660,9 @@ const RUN_URL     = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/run`;
 const PSET_URL    = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/pset-keys`;
 const EXPORT_URL  = `/projects/${{encodeURIComponent(PROJECT_ID)}}/list/export`;
 
-// ── sessionStorage keys ───────────────────────────────────────────────────
-// مثل clash module: per-project key
-const STATE_KEY    = "bp_list_v1_" + PROJECT_ID;  // داده کامل (rows + meta)
-const META_KEY     = "bp_list_meta_v1_" + PROJECT_ID;  // فقط metadata (fallback)
+const STATE_KEY    = "bp_list_v1_" + PROJECT_ID;
+const META_KEY     = "bp_list_meta_v1_" + PROJECT_ID;
 
-// ── State ─────────────────────────────────────────────────────────────────
 let allRows       = [];
 let psetKeys      = [];
 let filters       = [];
@@ -734,7 +711,6 @@ const statusCols       = document.getElementById("status-cols");
 const btnRun           = document.getElementById("btn-run");
 const btnExport        = document.getElementById("btn-export");
 const btnLoadPsets     = document.getElementById("btn-load-psets");
-const cacheBadge       = document.getElementById("cache-badge");
 const cacheClearWrap   = document.getElementById("cache-clear-wrap");
 
 function esc(s) {{
@@ -744,51 +720,47 @@ function esc(s) {{
 
 // ── sessionStorage helpers ────────────────────────────────────────────────
 
-/**
- * ذخیره state در sessionStorage
- * اگه QuotaExceededError بده فقط metadata ذخیره می‌کنه (بدون rows)
- */
+function showCacheBadge(hasRows) {{
+  if (hasRows === null) {{
+    cacheClearWrap.style.display = "none";
+    return;
+  }}
+  cacheClearWrap.style.display = "block";
+}}
+
 function saveToCache(rows, psetKeysArr, filtersArr, selectedColsArr, docIds) {{
   const meta = {{
-    total:       rows.length,
-    pset_keys:   psetKeysArr,
-    filters:     filtersArr,
+    total:         rows.length,
+    pset_keys:     psetKeysArr,
+    filters:       filtersArr,
     selected_cols: selectedColsArr,
-    doc_ids:     docIds,
-    ts:          Date.now(),
-    has_rows:    false,
+    doc_ids:       docIds,
+    ts:            Date.now(),
+    has_rows:      false,
   }};
 
-  // اول سعی کن داده کامل رو ذخیره کنی
   try {{
-    const full = JSON.stringify({{
-      ...meta,
-      has_rows: true,
-      rows:     rows,
-    }});
+    const full = JSON.stringify({{...meta, has_rows: true, rows}});
     sessionStorage.setItem(STATE_KEY, full);
     sessionStorage.removeItem(META_KEY);
     showCacheBadge(true);
     return;
   }} catch (e) {{
-    // QuotaExceededError یا مشکل دیگه
     if (e.name !== "QuotaExceededError" && !String(e).includes("quota")) {{
       console.warn("sessionStorage error:", e);
     }}
   }}
 
-  // fallback: فقط metadata ذخیره کن (بدون rows)
   try {{
     sessionStorage.setItem(META_KEY, JSON.stringify(meta));
     sessionStorage.removeItem(STATE_KEY);
-    showCacheBadge(false); // cache هست ولی rows نیستن
+    showCacheBadge(false);
   }} catch (e2) {{
     console.warn("sessionStorage metadata save failed:", e2);
   }}
 }}
 
 function loadFromCache() {{
-  // اول STATE_KEY (داده کامل)
   try {{
     const raw = sessionStorage.getItem(STATE_KEY);
     if (raw) {{
@@ -799,7 +771,6 @@ function loadFromCache() {{
     }}
   }} catch (_) {{}}
 
-  // بعد META_KEY (فقط metadata)
   try {{
     const raw = sessionStorage.getItem(META_KEY);
     if (raw) {{
@@ -815,23 +786,6 @@ function clearCache() {{
   try {{ sessionStorage.removeItem(STATE_KEY); }} catch (_) {{}}
   try {{ sessionStorage.removeItem(META_KEY); }} catch (_) {{}}
   showCacheBadge(null);
-}}
-
-function showCacheBadge(hasRows) {{
-  if (hasRows === null) {{
-    cacheBadge.style.display = "none";
-    cacheClearWrap.style.display = "none";
-    return;
-  }}
-  cacheBadge.style.display = "inline";
-  cacheClearWrap.style.display = "block";
-  if (hasRows) {{
-    cacheBadge.textContent = "🔄 Cache";
-    cacheBadge.title = "نتایج از sessionStorage بازیابی شدن";
-  }} else {{
-    cacheBadge.textContent = "⚠ Cache (بدون داده)";
-    cacheBadge.title = "Cache فقط metadata داره — برای داده کامل دوباره لود کن";
-  }}
 }}
 
 // ── فیلدهای فیلتر ────────────────────────────────────────────────────────
@@ -850,7 +804,6 @@ function buildFieldOptions(extraPsetKeys) {{
   return opts;
 }}
 
-// ── فیلتر اضافه کردن ─────────────────────────────────────────────────────
 function addFilter(fieldKey, operator, value) {{
   const id = ++filterCounter;
   const wrapper = document.createElement("div");
@@ -944,10 +897,7 @@ function buildColumnUI(preselected) {{
 }}
 
 function makeColRow(col, preselected) {{
-  // اگه preselected داریم از اون استفاده کن، وگرنه همه checked باشن
-  const isChecked = preselected
-    ? preselected.includes(col.key)
-    : true;
+  const isChecked = preselected ? preselected.includes(col.key) : true;
 
   const div = document.createElement("label");
   div.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;" +
@@ -970,7 +920,6 @@ function syncColumns() {{
   statusCols.textContent = selectedCols.length + " Spalten ausgewählt";
 }}
 
-// ── restore document selection از cache ───────────────────────────────────
 function restoreDocSelection(docIds) {{
   if (!docIds || !docIds.length) return;
   document.querySelectorAll(".doc-chk").forEach(cb => {{
@@ -978,7 +927,7 @@ function restoreDocSelection(docIds) {{
   }});
 }}
 
-// ── لود داده (POST به /run) ───────────────────────────────────────────────
+// ── لود داده ─────────────────────────────────────────────────────────────
 async function loadData() {{
   syncFilters();
   syncColumns();
@@ -993,7 +942,7 @@ async function loadData() {{
   btnRun.textContent = "⏳ …";
   statusTotal.textContent = "Lade Daten aus R2 …";
   statusFiltered.textContent = "";
-  clearCache();  // cache قدیمی رو پاک کن
+  clearCache();
 
   const needsPsets = selectedCols.some(c => c.startsWith("pset:")) ||
                      filters.some(f => f.field && f.field.startsWith("pset:"));
@@ -1014,7 +963,6 @@ async function loadData() {{
 
     allRows = data.rows || [];
 
-    // Pset-Schlüssel aktualisieren
     if (data.pset_keys && data.pset_keys.length) {{
       psetKeys = data.pset_keys;
       buildColumnUI(selectedCols.length ? selectedCols : null);
@@ -1034,8 +982,6 @@ async function loadData() {{
 
     syncColumns();
     renderTable(allRows);
-
-    // ── cache ذخیره کن ─────────────────────────────────────────────────
     saveToCache(allRows, psetKeys, filters, selectedCols, docIds);
 
   }} catch(e) {{
@@ -1100,9 +1046,13 @@ function _renderTableWith(rows, cols) {{
   resultTbody.innerHTML = tbody;
   tablePlaceholder.style.display = "none";
   resultTable.style.display = "";
+
+  // بعد از render به بالا اسکرول کن
+  const tableWrap = document.getElementById("table-wrap");
+  if (tableWrap) tableWrap.scrollTop = 0;
 }}
 
-// ── Pset-کلیدها لود کن ───────────────────────────────────────────────────
+// ── Pset-کلیدها ───────────────────────────────────────────────────────────
 async function loadPsetKeys() {{
   const docIds = [...document.querySelectorAll(".doc-chk:checked")].map(c => c.value);
   if (!docIds.length) {{
@@ -1228,37 +1178,39 @@ document.addEventListener("keydown", e => {{
 // ── اول بار: column UI بساز ──────────────────────────────────────────────
 buildColumnUI(null);
 
-// ── restore از sessionStorage (مثل clash module) ─────────────────────────
+// ── restore از sessionStorage ─────────────────────────────────────────────
 (function restore() {{
   const cached = loadFromCache();
   if (!cached) return;
 
   const {{ type, data }} = cached;
 
-  // restore انتخاب فایل‌ها
   if (data.doc_ids && data.doc_ids.length) {{
     restoreDocSelection(data.doc_ids);
   }}
 
-  // restore فیلترها
   if (data.filters && data.filters.length) {{
-    data.filters.forEach(f => {{
-      addFilter(f.field, f.operator, f.value);
-    }});
+    data.filters.forEach(f => addFilter(f.field, f.operator, f.value));
     syncFilters();
   }}
 
-  // restore pset keys و column UI
   if (data.pset_keys && data.pset_keys.length) {{
     psetKeys = data.pset_keys;
   }}
   buildColumnUI(data.selected_cols || null);
 
   if (type === "full" && data.rows && data.rows.length) {{
-    // داده کامل: مستقیم render کن
     allRows = data.rows;
     syncColumns();
+
+    // placeholder verstecken, Tabelle sofort zeigen
+    tablePlaceholder.style.display = "none";
+    resultTable.style.display = "";
     renderTable(allRows);
+
+    // Nach oben scrollen
+    const tableWrap = document.getElementById("table-wrap");
+    if (tableWrap) tableWrap.scrollTop = 0;
 
     const age = Math.round((Date.now() - (data.ts || 0)) / 1000);
     const ageLabel = age < 60 ? `${{age}}s` : `${{Math.round(age/60)}}min`;
@@ -1267,9 +1219,8 @@ buildColumnUI(null);
     showCacheBadge(true);
 
   }} else if (type === "meta") {{
-    // فقط metadata: اطلاعات نشون بده ولی جدول خالی
     statusTotal.textContent =
-      `Cache: ${{data.total}} Elemente (Daten zu groß für Cache – bitte neu laden)`;
+      `Cache: ${{data.total}} Elemente (Daten zu groß – bitte neu laden)`;
     showCacheBadge(false);
   }}
 }})();
