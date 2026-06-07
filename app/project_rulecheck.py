@@ -7,6 +7,11 @@ project_rulecheck.py – BIMPruef Rule-Check Projektmodul
 - هیچ session_id یا slot cache ای وجود ندارد
 - مثل project_clash.py و list_module.py
 
+sessionStorage cache:
+- نتایج، فیلترها، انتخاب فایل‌ها و انتخاب رول‌ها در sessionStorage ذخیره می‌شن
+- هنگام بازگشت به صفحه بدون درخواست جدید restore می‌شن
+- مثل project_clash.py
+
 Routen:
   GET  /projects/{project_id}/checking          → Rule-Check UI
   POST /projects/{project_id}/checking/run      → Regelprüfung ausführen (JSON-API)
@@ -485,7 +490,7 @@ def _checking_page(project: dict, account: dict) -> HTMLResponse:
           onmouseenter="this.style.borderColor='var(--accent)'"
           onmouseleave="this.style.borderColor='var(--border)'">
           <input type="checkbox" class="doc-chk" value="{doc_id}" {checked}
-            style="accent-color:var(--accent);width:13px;height:13px;flex-shrink:0;cursor:pointer">
+            style="accent-color:var(--accent);width:13px;height:13px;flex-shrink:0;margin-top:2px;cursor:pointer">
           <div style="width:28px;height:28px;border-radius:6px;background:rgba(79,195,247,0.1);
             border:1px solid rgba(79,195,247,0.25);display:flex;align-items:center;
             justify-content:center;flex-shrink:0">
@@ -548,7 +553,12 @@ def _checking_page(project: dict, account: dict) -> HTMLResponse:
         text-transform:uppercase;letter-spacing:.8px;
         border-bottom:1px solid var(--border);flex-shrink:0;
         display:flex;align-items:center;justify-content:space-between">
-        <span>✓ Rule-Check</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span>✓ Rule-Check</span>
+          <span id="cache-badge" style="display:none;font-size:9px;padding:2px 6px;
+            background:#0a2a3e;color:#4fc3f7;border:1px solid #1a4a6e;
+            border-radius:8px;font-weight:600">🔄 Cache</span>
+        </div>
         <button id="btn-run" class="btn btn-primary"
           style="font-size:11px;padding:3px 14px">▶ Prüfung starten</button>
       </div>
@@ -589,6 +599,15 @@ def _checking_page(project: dict, account: dict) -> HTMLResponse:
           <div style="display:flex;flex-direction:column;gap:6px">
             {rules_html}
           </div>
+        </div>
+
+        <!-- Cache leeren -->
+        <div id="cache-clear-wrap" style="display:none">
+          <button id="btn-clear-cache" class="btn"
+            style="width:100%;font-size:11px;padding:6px;
+            color:var(--muted);border-color:var(--border)">
+            🗑 Cache leeren &amp; neu starten
+          </button>
         </div>
 
       </div>
@@ -679,18 +698,62 @@ def _checking_page(project: dict, account: dict) -> HTMLResponse:
 <script>
 (function() {{
 
-const PROJECT_ID = {json.dumps(project_id)};
-const RUN_URL    = `/projects/${{encodeURIComponent(PROJECT_ID)}}/checking/run`;
+const PROJECT_ID  = {json.dumps(project_id)};
+const RUN_URL     = `/projects/${{encodeURIComponent(PROJECT_ID)}}/checking/run`;
 const EXPORT_BASE = `/projects/${{encodeURIComponent(PROJECT_ID)}}/checking/export`;
 
+// ── sessionStorage key (identisch zu project_clash.py Muster) ────────────
+const STATE_KEY = "bp_check_v1_" + PROJECT_ID;
+
 let _allResults    = [];
-let _currentFilter = 'all';
+let _currentFilter = "all";
 
 function esc(s) {{
   return String(s ?? "")
     .replace(/&/g,"&amp;").replace(/</g,"&lt;")
     .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }}
+
+// ── sessionStorage Helpers ────────────────────────────────────────────────
+
+function saveToCache(data) {{
+  try {{
+    sessionStorage.setItem(STATE_KEY, JSON.stringify(data));
+    showCacheBadge(true);
+  }} catch(e) {{
+    // QuotaExceededError: ignorieren, kein Cache
+    console.warn("sessionStorage save failed:", e);
+  }}
+}}
+
+function loadFromCache() {{
+  try {{
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }} catch(_) {{
+    return null;
+  }}
+}}
+
+function clearCache() {{
+  try {{ sessionStorage.removeItem(STATE_KEY); }} catch(_) {{}}
+  showCacheBadge(false);
+}}
+
+function showCacheBadge(visible) {{
+  const badge    = document.getElementById("cache-badge");
+  const clearWrap = document.getElementById("cache-clear-wrap");
+  if (visible) {{
+    badge.style.display    = "inline";
+    clearWrap.style.display = "block";
+  }} else {{
+    badge.style.display    = "none";
+    clearWrap.style.display = "none";
+  }}
+}}
+
+// ── UI Helpers ────────────────────────────────────────────────────────────
 
 window.toggleAllDocs = function(v) {{
   document.querySelectorAll(".doc-chk").forEach(c => {{ c.checked = !!v; }});
@@ -706,6 +769,8 @@ function sevLabel(s) {{
 function sevClass(s) {{
   return {{error:"sev-error", warning:"sev-warning", info:"sev-info"}}[s] || "";
 }}
+
+// ── Tabelle rendern ───────────────────────────────────────────────────────
 
 function renderTable(results) {{
   const thead = document.getElementById("result-thead");
@@ -735,6 +800,8 @@ function renderTable(results) {{
   </tr>`).join("");
 }}
 
+// ── Severity Filter ───────────────────────────────────────────────────────
+
 window.filterSev = function(sev) {{
   _currentFilter = sev;
   document.querySelectorAll("[id^='btn-sev-']").forEach(b => {{
@@ -744,6 +811,8 @@ window.filterSev = function(sev) {{
   const filtered = sev === "all" ? _allResults : _allResults.filter(r => r.severity === sev);
   renderTable(filtered);
 }};
+
+// ── Summary Chips ─────────────────────────────────────────────────────────
 
 function updateSummaryChips(summary) {{
   const el = document.getElementById("summary-chips");
@@ -762,6 +831,8 @@ function updateSummaryChips(summary) {{
     </span>`
   ).join("");
 }}
+
+// ── Prüfung starten ───────────────────────────────────────────────────────
 
 async function runCheck() {{
   const docIds = [...document.querySelectorAll(".doc-chk:checked")].map(c => c.value);
@@ -783,8 +854,10 @@ async function runCheck() {{
   document.getElementById("placeholder").style.display = "none";
   document.getElementById("result-table").style.display = "none";
   document.getElementById("loading").style.display = "flex";
-  document.getElementById("run-status").textContent = `${{docIds.length}} Datei(en) werden aus R2 geladen …`;
+  document.getElementById("run-status").textContent =
+    `${{docIds.length}} Datei(en) werden aus R2 geladen …`;
   updateSummaryChips(null);
+  clearCache();
 
   try {{
     const resp = await fetch(RUN_URL, {{
@@ -800,6 +873,7 @@ async function runCheck() {{
 
     updateSummaryChips(s);
 
+    // Export-Link aufbauen
     const exportBtn = document.getElementById("btn-export");
     const params = new URLSearchParams();
     docIds.forEach(id => params.append("document_ids", id));
@@ -817,6 +891,17 @@ async function runCheck() {{
     }}
     document.getElementById("run-status").textContent = statusText;
 
+    // ── sessionStorage: Ergebnisse cachen (identisch zu clash module) ─────
+    saveToCache({{
+      results:    _allResults,
+      summary:    s,
+      doc_ids:    docIds,
+      rules:      rules,
+      filter:     _currentFilter,
+      export_params: params.toString(),
+      ts:         Date.now(),
+    }});
+
   }} catch(e) {{
     document.getElementById("loading").style.display = "none";
     document.getElementById("placeholder").style.display = "flex";
@@ -829,7 +914,81 @@ async function runCheck() {{
   }}
 }}
 
+// ── Restore-Helfer ────────────────────────────────────────────────────────
+
+function restoreDocSelection(docIds) {{
+  if (!docIds || !docIds.length) return;
+  document.querySelectorAll(".doc-chk").forEach(cb => {{
+    cb.checked = docIds.includes(cb.value);
+  }});
+}}
+
+function restoreRuleSelection(rules) {{
+  if (!rules || !rules.length) return;
+  document.querySelectorAll(".rule-chk").forEach(cb => {{
+    cb.checked = rules.includes(cb.value);
+  }});
+}}
+
+// ── Event Listeners ───────────────────────────────────────────────────────
+
 document.getElementById("btn-run").addEventListener("click", runCheck);
+
+document.getElementById("btn-clear-cache").addEventListener("click", () => {{
+  clearCache();
+  _allResults = [];
+  _currentFilter = "all";
+  document.getElementById("result-table").style.display = "none";
+  document.getElementById("placeholder").style.display = "flex";
+  document.getElementById("placeholder").innerHTML = `
+    <svg width="44" height="44" fill="none" stroke="var(--muted)" stroke-width="1.5" viewBox="0 0 24 24">
+      <path d="M9 11l3 3L22 4"/>
+      <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+    </svg>
+    <div>
+      <div style="font-size:14px;color:var(--text);margin-bottom:6px">Cache geleert</div>
+      <div style="font-size:12px;color:var(--muted)">
+        Klicke <strong style="color:var(--accent)">▶ Prüfung starten</strong> um neu zu laden.
+      </div>
+    </div>`;
+  updateSummaryChips(null);
+  document.getElementById("run-status").textContent = "Cache geleert – neu laden";
+  document.getElementById("btn-export").style.display = "none";
+}});
+
+// ── Restore aus sessionStorage (identisch zu project_clash.py) ───────────
+(function restore() {{
+  const cached = loadFromCache();
+  if (!cached) return;
+
+  // Auswahl wiederherstellen
+  restoreDocSelection(cached.doc_ids);
+  restoreRuleSelection(cached.rules);
+
+  _allResults = cached.results || [];
+  if (!_allResults.length) return;
+
+  // Summary + Tabelle anzeigen
+  updateSummaryChips(cached.summary || {{}});
+
+  // Export-Link wiederherstellen
+  const exportBtn = document.getElementById("btn-export");
+  if (cached.export_params) {{
+    exportBtn.href = EXPORT_BASE + "?" + cached.export_params;
+    exportBtn.style.display = "";
+  }}
+
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("result-table").style.display = "";
+  filterSev(cached.filter || "all");
+
+  const age = Math.round((Date.now() - (cached.ts || 0)) / 1000);
+  const ageLabel = age < 60 ? `${{age}}s` : `${{Math.round(age/60)}}min`;
+  document.getElementById("run-status").textContent =
+    `${{_allResults.length}} Befunde (Cache ${{ageLabel}} alt)`;
+
+  showCacheBadge(true);
+}})();
 
 }})();
 </script>
