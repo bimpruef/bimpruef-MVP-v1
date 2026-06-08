@@ -1,6 +1,11 @@
 """
 project_viewer.py – BIMPruef Direct Viewer
 
+تغییر نسبت به نسخه قبلی:
+  انتهای _direct_viewer_js: بلوک VIEWER SESSION STORAGE STATE اضافه شده
+  که doc_ids انتخاب‌شده را در sessionStorage مرورگر ذخیره می‌کند
+  تا هنگام بازگشت از ماژول دیگر، مدل‌ها بدون نیاز به انتخاب مجدد لود شوند.
+
 Direkter Viewer-Modul – liest IFC-Modelle direkt aus Documents/R2.
 Keine Abhängigkeit zu Session/Slot-Cache.
 
@@ -152,28 +157,6 @@ def view_file_stream(request: Request, project_id: str, document_id: str):
 
 @project_viewer_router.post("/projects/{project_id}/view/pset/save")
 async def view_pset_save(request: Request, project_id: str):
-    """
-    Lädt die IFC-Datei aus R2, wendet Attribut- und PSets-Änderungen an und
-    speichert das Ergebnis zurück.
-
-    Request-Body (JSON):
-    {
-      "document_id":  "...",
-      "express_id":   42,
-      "save_mode":    "overwrite" | "save_as",
-      "new_filename": "...",          // nur bei save_as
-      "changes": {
-        "Name":       "...",
-        "ObjectType": "...",
-        "Description":"...",
-        "Tag":        "...",
-        "psets": {
-          "Pset_WallCommon": { "IsExternal": "true", "FireRating": "REI90" },
-          "MyNewPset":       { "Eigenschaft1": "Wert1" }
-        }
-      }
-    }
-    """
     account = _account_from_request(request)
     account_id = account["account_id"]
 
@@ -203,10 +186,8 @@ async def view_pset_save(request: Request, project_id: str):
     tmp_path = ""
     ifc_tmp  = ""
     try:
-        # ── Download from R2 ─────────────────────────────────────────────────
         tmp_path = _download_ifc_to_temp(doc)
 
-        # If IFCZIP, extract the IFC first, write to a separate temp file
         ext = doc.get("file_extension", ".ifc").lower()
         if ext == ".ifczip":
             ifc_bytes = _read_ifc_bytes(tmp_path, ext)
@@ -218,7 +199,6 @@ async def view_pset_save(request: Request, project_id: str):
         else:
             work_path = tmp_path
 
-        # ── Apply edits with ifcopenshell ─────────────────────────────────────
         import ifcopenshell
         import ifcopenshell.util.element
         import ifcopenshell.guid
@@ -237,7 +217,6 @@ async def view_pset_save(request: Request, project_id: str):
                 status_code=404,
             )
 
-        # Simple scalar attributes
         for attr in ("Name", "ObjectType", "Description", "Tag"):
             if attr in changes:
                 val = changes[attr]
@@ -246,13 +225,11 @@ async def view_pset_save(request: Request, project_id: str):
                 except Exception:
                     pass
 
-        # PSets
         for pset_name, props in (changes.get("psets") or {}).items():
             pset_name = str(pset_name or "").strip()
             if not pset_name:
                 continue
 
-            # Find existing PSets
             existing_pset = None
             try:
                 all_psets = ifcopenshell.util.element.get_psets(elem, psets_only=True)
@@ -267,7 +244,6 @@ async def view_pset_save(request: Request, project_id: str):
             except Exception:
                 pass
 
-            # Create PSets if not found
             if existing_pset is None:
                 if _has_api:
                     try:
@@ -296,7 +272,6 @@ async def view_pset_save(request: Request, project_id: str):
                         RelatingPropertyDefinition=existing_pset,
                     )
 
-            # Write properties
             for prop_name, prop_val in (props or {}).items():
                 prop_name = str(prop_name or "").strip()
                 if not prop_name:
@@ -340,10 +315,8 @@ async def view_pset_save(request: Request, project_id: str):
                     except Exception:
                         pass
 
-        # Write modified model
         model.write(work_path)
 
-        # ── Upload back ───────────────────────────────────────────────────────
         if save_mode == "save_as":
             if not new_filename:
                 base = doc["original_filename"].rsplit(".", 1)[0]
@@ -369,7 +342,7 @@ async def view_pset_save(request: Request, project_id: str):
                 "document_id": new_doc["document_id"],
             })
 
-        else:  # overwrite
+        else:
             if not (r2_enabled() and upload_file_to_r2):
                 return JSONResponse({"error": "R2 nicht konfiguriert."}, status_code=503)
 
@@ -471,7 +444,6 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
         for m in model_entries
     )
 
-    # Sidebar document list
     selected_ids = {d["document_id"] for d in selected_docs}
     select_rows  = ""
     for i, doc in enumerate(all_ifc_docs):
@@ -706,7 +678,7 @@ const PROJECT_ID = {json.dumps(project_id)};
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IFC-Typ colour / category map  (unchanged from original)
+# IFC-Typ colour / category map
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _direct_viewer_js(model_urls_js: str) -> str:
@@ -888,7 +860,7 @@ function updateHiddenCount(){
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Category Tree UI  (unchanged)
+// Category Tree UI
 // ════════════════════════════════════════════════════════════════════════════
 function buildCategoryUI(){
   const list=document.getElementById("cat-scroll"); if(!list)return; list.innerHTML="";
@@ -999,7 +971,7 @@ document.getElementById("btn-cat-all").addEventListener("click",()=>setCatAll(tr
 document.getElementById("btn-cat-none").addEventListener("click",()=>setCatAll(false));
 
 // ════════════════════════════════════════════════════════════════════════════
-// web-ifc  +  model loader  (unchanged)
+// web-ifc + model loader
 // ════════════════════════════════════════════════════════════════════════════
 let webIfc=null;
 async function initWebIfc(){
@@ -1060,7 +1032,7 @@ function fitAll(){
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// INFO PANEL  –  read-only  +  EDIT MODE  with PSets editor
+// INFO PANEL – read-only + EDIT MODE with PSets editor
 // ════════════════════════════════════════════════════════════════════════════
 
 let selectedMesh   = null;
@@ -1079,10 +1051,9 @@ function _inpS(){
     transition:border-color 0.15s;`;
 }
 
-// ── Read-only view ─────────────────────────────────────────────────────────
 function _renderReadOnly(d){
   const ts  = d.typeStyle || getTypeStyle(d.ifcType);
-  const tHex= "#"+new THREE.Color(ts.color).getHexString();
+  const tHex  = "#"+new THREE.Color(ts.color).getHexString();
   const tL  = ts.lightColor||'#F8FAFC';
   let h = `
 <div style="font-size:11px;font-weight:700;color:${d.slotColor};margin-bottom:12px;
@@ -1109,7 +1080,6 @@ function _renderReadOnly(d){
 </div>`;
   }
   h+=`</div>`;
-  // PSets
   const psets=d.psets||{};
   if(Object.keys(psets).length){
     h+=`<div style="border-top:1px solid #E2E8F0;padding-top:10px;margin-top:4px;font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Eigenschaften</div>`;
@@ -1127,7 +1097,6 @@ function _renderReadOnly(d){
       h+=`</div>`;
     }
   }
-  // Edit button
   h+=`<div style="margin-top:14px;border-top:1px solid #E2E8F0;padding-top:12px">
   <button onclick="enterEditMode()"
     style="width:100%;padding:8px;background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;
@@ -1138,21 +1107,17 @@ function _renderReadOnly(d){
   infoBody.innerHTML=h;
 }
 
-// ── Edit view ──────────────────────────────────────────────────────────────
 function _renderEditMode(d){
-  const docId=d.documentId||d.docId||"";
   let h=`
 <div style="font-size:11px;font-weight:700;color:${d.slotColor};margin-bottom:10px;
   display:flex;align-items:center;gap:6px">
   <span style="width:8px;height:8px;border-radius:50%;background:${d.slotColor};flex-shrink:0"></span>
   ${esc(d.modelLabel)} <span style="margin-left:auto;font-size:10px;background:#FEF3C7;color:#92400E;padding:2px 6px;border-radius:4px;font-weight:600">Bearbeitungsmodus</span>
 </div>
-<!-- Read-only header fields -->
 <div style="font-size:10px;color:#94A3B8;margin-bottom:10px">
   <div><strong>IFC-Typ:</strong> ${esc(d.ifcType)} &nbsp;|&nbsp; <strong>GlobalId:</strong> <span style="font-family:monospace">${esc(d.globalId)}</span></div>
   <div style="margin-top:2px"><strong>Express-ID:</strong> ${esc(String(d.expressId))}</div>
 </div>
-<!-- Editable attributes -->
 <div style="border-top:1px solid #E2E8F0;padding-top:10px;margin-bottom:4px;font-size:10px;font-weight:700;color:#1E40AF;text-transform:uppercase;letter-spacing:.4px">Attribute</div>`;
   const attrs=[["Name","Name",d.name],["ObjectType","ObjectType",d.objectType],["Description","Description",d.description],["Tag","Tag",d.tag]];
   for(const[label,field,val]of attrs){
@@ -1161,7 +1126,6 @@ function _renderEditMode(d){
   <input type="text" data-edit-field="${esc(field)}" value="${esc(val||"")}" placeholder="${esc(label)}" style="${_inpS()}">
 </div>`;
   }
-  // PSets editor
   h+=`<div style="border-top:1px solid #E2E8F0;padding-top:10px;margin-top:6px;margin-bottom:6px;
     display:flex;align-items:center;justify-content:space-between">
   <span style="font-size:10px;font-weight:700;color:#1E40AF;text-transform:uppercase;letter-spacing:.4px">Property Sets</span>
@@ -1174,7 +1138,6 @@ function _renderEditMode(d){
     h+=_renderPsetEditBlock(pn,props);
   }
   h+=`</div>
-<!-- Action buttons -->
 <div style="border-top:1px solid #E2E8F0;padding-top:12px;margin-top:12px;display:flex;flex-direction:column;gap:6px">
   <div style="display:flex;gap:6px">
     <button onclick="saveEdits('overwrite')" style="flex:1;padding:8px;background:#065F46;border:1px solid rgba(6,95,70,.3);color:#ECFDF5;border-radius:7px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit">
@@ -1310,7 +1273,6 @@ async function saveEdits(mode){
       setTimeout(()=>{ if(confirm(`„${new_filename}" wurde im Documents-Modul gespeichert. Seite neu laden?`)) location.reload(); },400);
     } else {
       if(status)status.innerHTML='<span style="color:#059669">✓ Datei in R2 überschrieben</span>';
-      // Refresh psets display in element data
       setTimeout(()=>{ if(status&&status.innerHTML.includes("✓")) status.innerHTML=""; },4000);
     }
   }catch(err){
@@ -1318,7 +1280,6 @@ async function saveEdits(mode){
   }
 }
 
-// ── Selection ──────────────────────────────────────────────────────────────
 function showInfo(m){
   const d=m.userData;
   _editDocumentId=d.documentId||d.docId||"";
@@ -1367,7 +1328,6 @@ window.addEventListener("keydown",e=>{
   updateHiddenCount();
 });
 
-// ── Buttons ────────────────────────────────────────────────────────────────
 document.getElementById("btn-fit").addEventListener("click", fitAll);
 document.getElementById("btn-reset").addEventListener("click",()=>{ orb.tgt.set(0,0,0); orb.sph.set(80,Math.PI/4,Math.PI/4); applyOrb(); });
 document.getElementById("btn-show-all").addEventListener("click",()=>{ hiddenIds.clear(); applyVisibility(); });
@@ -1427,5 +1387,71 @@ function esc(s){ return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
     if(loadStatus)loadStatus.textContent=`✓ ${MODEL_URLS.length} Modell(e) · ${total.toLocaleString()} Punkte`;
   }catch(err){ if(loadTxt)loadTxt.textContent="Fehler: "+err.message; console.error(err); }
   finally{ if(loadEl)loadEl.style.display="none"; }
+})();
+
+// ════════════════════════════════════════════════════════════════════════════
+// VIEWER SESSION STORAGE STATE
+// هدف: حفظ انتخاب doc_ids وقتی کاربر به ماژول دیگری می‌رود و برمی‌گردد
+//
+// چه چیزی ذخیره می‌شود؟
+//   فقط آرایه‌ای از document_id ها در sessionStorage مرورگر
+//   مثال: ["abc123", "def456"]
+//
+// چه چیزی ذخیره نمی‌شود؟
+//   فایل‌های IFC — آن‌ها همیشه دوباره از R2 لود می‌شوند
+//
+// جریان کار:
+//   1. کاربر فایل‌ها را انتخاب می‌کند → URL شامل doc_ids می‌شود
+//   2. JS این doc_ids را در sessionStorage ذخیره می‌کند
+//   3. کاربر به Clash/List/... می‌رود
+//   4. کاربر به viewer برمی‌گردد → URL بدون doc_ids است
+//   5. JS از sessionStorage می‌خواند → redirect به URL با doc_ids
+//   6. فایل‌ها از R2 لود می‌شوند (دوباره، مثل همیشه)
+// ════════════════════════════════════════════════════════════════════════════
+
+(function () {
+  const VIEWER_STATE_KEY = "bp_viewer_docs_" + PROJECT_ID;
+  const url = new URL(window.location.href);
+  const hasDocs = url.searchParams.has("doc_ids");
+
+  if (!hasDocs) {
+    // URL خالی است — بررسی sessionStorage
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(VIEWER_STATE_KEY) || "null");
+      if (saved && Array.isArray(saved) && saved.length > 0) {
+        // doc_ids قبلی پیدا شد → redirect با همان انتخاب
+        saved.forEach(id => url.searchParams.append("doc_ids", id));
+        window.location.replace(url.toString());
+        return;
+      }
+    } catch (_) {}
+    // sessionStorage خالی است → viewer بدون مدل (رفتار معمولی)
+  } else {
+    // URL شامل doc_ids است → ذخیره در sessionStorage
+    try {
+      const ids = url.searchParams.getAll("doc_ids");
+      sessionStorage.setItem(VIEWER_STATE_KEY, JSON.stringify(ids));
+    } catch (_) {}
+  }
+
+  // applyDocSelection را wrap کن تا هنگام تغییر انتخاب، sessionStorage آپدیت شود
+  const _origApply = window.applyDocSelection;
+  window.applyDocSelection = function () {
+    const form = document.getElementById("model-select-form");
+    if (form) {
+      const ids = [...form.querySelectorAll("input[name=doc_ids]:checked")]
+        .map(i => i.value);
+      try {
+        if (ids.length > 0) {
+          sessionStorage.setItem(VIEWER_STATE_KEY, JSON.stringify(ids));
+        } else {
+          // کاربر همه را deselect کرده → پاک کردن storage
+          sessionStorage.removeItem(VIEWER_STATE_KEY);
+        }
+      } catch (_) {}
+    }
+    _origApply();
+  };
+
 })();
 """
