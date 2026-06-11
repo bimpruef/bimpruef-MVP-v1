@@ -4,13 +4,16 @@ issue_storage.py – Projektbasiertes Issues-Modul für BIMPruef
 Issues sind die zentrale fachliche Sammelstelle für Clash-Ergebnisse und
 spätere Prüf-/Koordinationspunkte. BCF-Export gehört hierhin, nicht ins
 Clash-Modul.
+
+Aktive Architektur:
+  - Clash-Issues werden pro ProjectDocument-Kombination gespeichert.
+  - Keine viewer session slots, kein slot_1/slot_2 mehr.
 """
 
 import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -65,6 +68,7 @@ def _issue_to_dict(issue: ProjectIssue) -> dict:
             payload = json.loads(issue.payload_json)
         except Exception:
             payload = {}
+
     return {
         "issue_id": issue.issue_id,
         "project_id": issue.project_id,
@@ -82,8 +86,8 @@ def _issue_to_dict(issue: ProjectIssue) -> dict:
         "name_2": issue.name_2 or "",
         "file_label_1": issue.file_label_1 or "",
         "file_label_2": issue.file_label_2 or "",
-        "slot_1": int(issue.slot_1 or 0),
-        "slot_2": int(issue.slot_2 or 0),
+        "document_id_1": getattr(issue, "document_id_1", "") or "",
+        "document_id_2": getattr(issue, "document_id_2", "") or "",
         "payload": payload,
         "created_at": _dt(issue.created_at),
         "updated_at": _dt(issue.updated_at),
@@ -91,13 +95,20 @@ def _issue_to_dict(issue: ProjectIssue) -> dict:
 
 
 def ensure_issue_schema() -> None:
-    """Idempotente Migration für bereits bestehende PostgreSQL-Datenbanken."""
+    """
+    Idempotente Migration für bereits bestehende PostgreSQL-Datenbanken.
+
+    Fügt die neuen document_id-Spalten hinzu, falls sie fehlen.
+    Alte slot_1/slot_2-Spalten werden hier bewusst nicht automatisch gelöscht,
+    weil DROP COLUMN in Produktion separat und kontrolliert passieren sollte.
+    """
     try:
         init_db()
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
         if "project_issues" not in tables:
             return
+
         existing = {c["name"] for c in inspector.get_columns("project_issues")}
         cols = {
             "source": "VARCHAR(60) NOT NULL DEFAULT 'manual'",
@@ -113,16 +124,19 @@ def ensure_issue_schema() -> None:
             "name_2": "VARCHAR(255) NOT NULL DEFAULT ''",
             "file_label_1": "VARCHAR(255) NOT NULL DEFAULT ''",
             "file_label_2": "VARCHAR(255) NOT NULL DEFAULT ''",
-            "slot_1": "INTEGER NOT NULL DEFAULT 0",
-            "slot_2": "INTEGER NOT NULL DEFAULT 0",
+            "document_id_1": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "document_id_2": "VARCHAR(64) NOT NULL DEFAULT ''",
             "payload_json": "TEXT NOT NULL DEFAULT '{}'",
             "updated_at": "TIMESTAMP WITH TIME ZONE",
         }
+
         with engine.begin() as conn:
             for name, ddl in cols.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE project_issues ADD COLUMN {name} {ddl}"))
     except Exception:
+        # Startup should not fail because of a transient DB/migration problem.
+        # Real DB operations will still raise clear errors later.
         pass
 
 
@@ -162,10 +176,12 @@ def get_issue(account_id: str, project_id: str, issue_id: str) -> dict:
 
 
 def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> list[dict]:
-    """Speichert ausgewählte Clash-Zeilen als Issues.
+    """
+    Speichert ausgewählte Clash-Zeilen als Issues.
 
-    Deduplizierung: pro Projekt wird dieselbe GlobalId-Paarung aus derselben
-    Slot-Kombination nur einmal als offenes Clash-Issue angelegt.
+    Deduplizierung:
+    pro Projekt wird dieselbe GlobalId-Paarung aus derselben Dokument-Kombination
+    nur einmal als Clash-Issue angelegt.
     """
     if not clashes:
         raise ValidationError("Bitte mindestens eine Clash-Zeile auswählen.")
@@ -176,11 +192,12 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
     with SessionLocal() as db:
         project = _project_for_account(db, account_id, project_id)
 
-        for idx, clash in enumerate(clashes, start=1):
+        for clash in clashes:
             gid1 = _clean(clash.get("global_id_1", ""), 80)
             gid2 = _clean(clash.get("global_id_2", ""), 80)
-            slot1 = int(clash.get("slot_1") or 0)
-            slot2 = int(clash.get("slot_2") or 0)
+            doc1 = _clean(clash.get("document_id_1", ""), 64)
+            doc2 = _clean(clash.get("document_id_2", ""), 64)
+
             if not gid1 or not gid2:
                 continue
 
@@ -191,8 +208,8 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
                     ProjectIssue.issue_type == "clash",
                     ProjectIssue.global_id_1 == gid1,
                     ProjectIssue.global_id_2 == gid2,
-                    ProjectIssue.slot_1 == slot1,
-                    ProjectIssue.slot_2 == slot2,
+                    ProjectIssue.document_id_1 == doc1,
+                    ProjectIssue.document_id_2 == doc2,
                 )
                 .first()
             )
@@ -204,12 +221,14 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
             type2 = _clean(clash.get("type_2", ""), 120)
             name1 = _clean(clash.get("name_1", ""), 255)
             name2 = _clean(clash.get("name_2", ""), 255)
+
             title = f"Clash: {type1 or 'Element A'} ↔ {type2 or 'Element B'}"
             description = (
                 f"Aus Clash-Analyse gespeichert.\n\n"
                 f"Element A: {type1} | {name1} | {gid1}\n"
                 f"Element B: {type2} | {name2} | {gid2}"
             )
+
             issue = ProjectIssue(
                 issue_id=uuid.uuid4().hex,
                 project_id=project_id,
@@ -227,18 +246,20 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
                 name_2=name2,
                 file_label_1=_clean(clash.get("file_label_1", ""), 255),
                 file_label_2=_clean(clash.get("file_label_2", ""), 255),
-                slot_1=slot1,
-                slot_2=slot2,
+                document_id_1=doc1,
+                document_id_2=doc2,
                 payload_json=json.dumps(clash, ensure_ascii=False, default=str),
                 created_at=now,
                 updated_at=now,
             )
+
             db.add(issue)
             try:
                 db.flush()
             except IntegrityError:
                 db.rollback()
                 raise ConflictError("Issue konnte wegen eines Datenkonflikts nicht gespeichert werden.")
+
             created.append(_issue_to_dict(issue))
 
         project.updated_at = now
@@ -266,7 +287,13 @@ def issue_to_bcf_clash(issue: dict) -> dict:
     """Konvertiert ein Issue-Dict in das Clash-Dict-Format des BCF-Exports."""
     payload = issue.get("payload") or {}
     if isinstance(payload, dict) and payload.get("global_id_1") and payload.get("global_id_2"):
-        return payload
+        cleaned_payload = dict(payload)
+        cleaned_payload.pop("slot_1", None)
+        cleaned_payload.pop("slot_2", None)
+        cleaned_payload.setdefault("document_id_1", issue.get("document_id_1", ""))
+        cleaned_payload.setdefault("document_id_2", issue.get("document_id_2", ""))
+        return cleaned_payload
+
     return {
         "global_id_1": issue.get("global_id_1", ""),
         "global_id_2": issue.get("global_id_2", ""),
@@ -276,6 +303,6 @@ def issue_to_bcf_clash(issue: dict) -> dict:
         "name_2": issue.get("name_2", ""),
         "file_label_1": issue.get("file_label_1", ""),
         "file_label_2": issue.get("file_label_2", ""),
-        "slot_1": issue.get("slot_1", 0),
-        "slot_2": issue.get("slot_2", 0),
+        "document_id_1": issue.get("document_id_1", ""),
+        "document_id_2": issue.get("document_id_2", ""),
     }
