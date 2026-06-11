@@ -71,13 +71,13 @@ def _fmt_size(num: int) -> str:
     return f"{n:.1f} GB"
 
 
-SLOT_COLORS = [
+MODEL_COLORS = [
     "#1E6FBF", "#D97706", "#059669", "#DC2626",
     "#7C3AED", "#0891B2", "#BE185D", "#65A30D",
 ]
 
-def _slot_color(index: int) -> str:
-    return SLOT_COLORS[index % len(SLOT_COLORS)]
+def _model_color(index: int) -> str:
+    return MODEL_COLORS[index % len(MODEL_COLORS)]
 
 
 def _download_ifc_to_temp(doc: dict) -> str:
@@ -441,7 +441,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
     model_entries = []
     for i, doc in enumerate(selected_docs):
-        color = _slot_color(i)
+        color = _model_color(i)
         url = f"/projects/{pid}/view/file/{_e(doc['document_id'])}"
         model_entries.append({
             "url": url,
@@ -463,7 +463,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
     for i, doc in enumerate(all_ifc_docs):
         doc_id = _e(doc.get("document_id", ""))
         checked = "checked" if doc.get("document_id") in selected_ids else ""
-        col = _slot_color(i)
+        col = _model_color(i)
         col_light = _color_to_light_bg(col)
         ext_badge = _e(str(doc.get("file_extension", ".ifc")).upper().lstrip("."))
         name = _e(doc.get("original_filename", "IFC"))
@@ -1267,8 +1267,8 @@ async function loadModel(cfg,index,total){
   for(let i=0;i<fms.size();i++){
     const fm=fms.get(i), expId=fm.expressID, line=elemIndex[expId], tName=typeName(line), elementTypeName=resolveElementTypeName(expId,line);
     const typeStyle=getTypeStyle(tName), isFlat=FLAT_TYPES.has(tName), tCol=new THREE.Color(typeStyle.color);
-    if(!seen.has(expId)){ seen.add(expId); if(!docEntities[tName])docEntities[tName]={}; if(!docEntities[tName][elementTypeName])docEntities[tName][elementTypeName]=[]; const eKey=entityKey(docKey,tName); if(entityVisible[eKey]===undefined)entityVisible[eKey]=!isFlat; const k=typeKey(docKey,tName,elementTypeName); if(typeVisible[k]===undefined)typeVisible[k]=!isFlat; docEntities[tName][elementTypeName].push({name:sv(line?.Name)||sv(line?.GlobalId)||String(expId),expressId:expId,globalId:sv(line?.GlobalId),ifcEntity:tName,typeName:elementTypeName,docId,modelLabel:cfg.label,slotColor:cfg.color}); }
-    const meta={expressId:expId,ifcType:tName,typeName:elementTypeName,name:sv(line?.Name),globalId:sv(line?.GlobalId),objectType:sv(line?.ObjectType),description:sv(line?.Description),tag:sv(line?.Tag),docId,documentId:cfg.documentId,modelLabel:cfg.label,slotColor:cfg.color,psets:getPsets(expId),isFlat,typeStyle};
+    if(!seen.has(expId)){ seen.add(expId); if(!docEntities[tName])docEntities[tName]={}; if(!docEntities[tName][elementTypeName])docEntities[tName][elementTypeName]=[]; const eKey=entityKey(docKey,tName); if(entityVisible[eKey]===undefined)entityVisible[eKey]=!isFlat; const k=typeKey(docKey,tName,elementTypeName); if(typeVisible[k]===undefined)typeVisible[k]=!isFlat; docEntities[tName][elementTypeName].push({name:sv(line?.Name)||sv(line?.GlobalId)||String(expId),expressId:expId,globalId:sv(line?.GlobalId),ifcEntity:tName,typeName:elementTypeName,docId,modelLabel:cfg.label,modelColor:cfg.color}); }
+    const meta={expressId:expId,ifcType:tName,typeName:elementTypeName,name:sv(line?.Name),globalId:sv(line?.GlobalId),objectType:sv(line?.ObjectType),description:sv(line?.Description),tag:sv(line?.Tag),docId,documentId:cfg.documentId,modelLabel:cfg.label,modelColor:cfg.color,psets:getPsets(expId),isFlat,typeStyle};
     const mat=new THREE.MeshLambertMaterial({color:tCol.clone(),transparent:true,opacity:isFlat?.28:.88,wireframe:isFlat,side:THREE.DoubleSide});
     const pgs=fm.geometries;
     for(let j=0;j<pgs.size();j++){
@@ -1313,10 +1313,10 @@ function _renderReadOnly(d){
   const tHex  = "#"+new THREE.Color(ts.color).getHexString();
   const tL  = ts.lightColor||'#F8FAFC';
   let h = `
-<div style="font-size:11px;font-weight:700;color:${d.slotColor};margin-bottom:12px;
+<div style="font-size:11px;font-weight:700;color:${d.modelColor};margin-bottom:12px;
   padding-bottom:10px;border-bottom:1px solid #E2E8F0;
   display:flex;align-items:center;gap:6px">
-  <span style="width:8px;height:8px;border-radius:50%;background:${d.slotColor};flex-shrink:0"></span>
+  <span style="width:8px;height:8px;border-radius:50%;background:${d.modelColor};flex-shrink:0"></span>
   ${esc(d.modelLabel)}
 </div>
 <div style="background:${tL};border:1px solid ${tHex}33;border-radius:8px;
@@ -1366,9 +1366,9 @@ function _renderReadOnly(d){
 
 function _renderEditMode(d){
   let h=`
-<div style="font-size:11px;font-weight:700;color:${d.slotColor};margin-bottom:10px;
+<div style="font-size:11px;font-weight:700;color:${d.modelColor};margin-bottom:10px;
   display:flex;align-items:center;gap:6px">
-  <span style="width:8px;height:8px;border-radius:50%;background:${d.slotColor};flex-shrink:0"></span>
+  <span style="width:8px;height:8px;border-radius:50%;background:${d.modelColor};flex-shrink:0"></span>
   ${esc(d.modelLabel)} <span style="margin-left:auto;font-size:10px;background:#FEF3C7;color:#92400E;padding:2px 6px;border-radius:4px;font-weight:600">Bearbeitungsmodus</span>
 </div>
 <div style="font-size:10px;color:#94A3B8;margin-bottom:10px">
@@ -1624,8 +1624,8 @@ document.getElementById("btn-apply-select")?.addEventListener("click",applyNavSe
 // ════════════════════════════════════════════════════════════════════════════
 const searchInput=document.getElementById("gid-search"), searchResults=document.getElementById("search-results"), searchClear=document.getElementById("search-clear");
 const searchIndex=[];
-function buildSearchIndex(){ searchIndex.length=0; const seen=new Set(); for(const m of allMeshes()){const gid=m.userData.globalId;if(!gid||seen.has(gid))continue;seen.add(gid);searchIndex.push({globalId:gid,expressId:m.userData.expressId,name:m.userData.name,ifcType:m.userData.ifcType,docId:m.userData.docId,modelLabel:m.userData.modelLabel,slotColor:m.userData.slotColor,typeStyle:m.userData.typeStyle});} }
-function renderSearch(q){ q=q.trim().toLowerCase(); if(!q){searchResults.style.display="none";searchClear.style.display="none";return;} searchClear.style.display="inline"; const hits=searchIndex.filter(e=>e.globalId.toLowerCase().includes(q)).slice(0,50); if(!hits.length){searchResults.innerHTML='<div style="padding:10px 14px;font-size:12px;color:#94A3B8">Keine Ergebnisse</div>';searchResults.style.display="block";return;} let h=`<div style="padding:6px 14px;font-size:10px;color:#1E6FBF;font-weight:600;border-bottom:1px solid #E2E8F0">${hits.length} Treffer</div>`; h+=hits.map(el=>{const col=el.slotColor||"#1E6FBF",ts=el.typeStyle||getTypeStyle(el.ifcType),tHex="#"+new THREE.Color(ts.color).getHexString(); return `<div class="s-row" data-gid="${esc(el.globalId)}" style="padding:8px 14px;cursor:pointer;border-bottom:1px solid #F1F5F9"><div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span style="width:7px;height:7px;border-radius:50%;background:${tHex};flex-shrink:0"></span><span style="font-size:12px;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(el.name||el.ifcType)}</span><span style="font-size:10px;color:${col};flex-shrink:0">${esc(el.ifcType.replace(/^Ifc/,""))}</span></div><div style="font-size:10px;color:#64748B;font-family:monospace;padding-left:12px">${esc(el.globalId)}</div></div>`; }).join(""); searchResults.innerHTML=h; searchResults.style.display="block"; searchResults.querySelectorAll(".s-row").forEach(row=>{row.addEventListener("mouseenter",()=>row.style.background="#F8FAFC");row.addEventListener("mouseleave",()=>row.style.background="");row.addEventListener("click",()=>{const gid=row.dataset.gid;const mesh=allMeshes().find(m=>m.userData.globalId===gid);if(!mesh)return;selectMesh(mesh);const box=new THREE.Box3().setFromObject(mesh);if(!box.isEmpty()){orb.tgt.copy(box.getCenter(new THREE.Vector3()));orb.sph.radius=Math.max(box.getSize(new THREE.Vector3()).length()*2.5,2);applyOrb();}searchResults.style.display="none";});});}
+function buildSearchIndex(){ searchIndex.length=0; const seen=new Set(); for(const m of allMeshes()){const gid=m.userData.globalId;if(!gid||seen.has(gid))continue;seen.add(gid);searchIndex.push({globalId:gid,expressId:m.userData.expressId,name:m.userData.name,ifcType:m.userData.ifcType,docId:m.userData.docId,modelLabel:m.userData.modelLabel,modelColor:m.userData.modelColor,typeStyle:m.userData.typeStyle});} }
+function renderSearch(q){ q=q.trim().toLowerCase(); if(!q){searchResults.style.display="none";searchClear.style.display="none";return;} searchClear.style.display="inline"; const hits=searchIndex.filter(e=>e.globalId.toLowerCase().includes(q)).slice(0,50); if(!hits.length){searchResults.innerHTML='<div style="padding:10px 14px;font-size:12px;color:#94A3B8">Keine Ergebnisse</div>';searchResults.style.display="block";return;} let h=`<div style="padding:6px 14px;font-size:10px;color:#1E6FBF;font-weight:600;border-bottom:1px solid #E2E8F0">${hits.length} Treffer</div>`; h+=hits.map(el=>{const col=el.modelColor||"#1E6FBF",ts=el.typeStyle||getTypeStyle(el.ifcType),tHex="#"+new THREE.Color(ts.color).getHexString(); return `<div class="s-row" data-gid="${esc(el.globalId)}" style="padding:8px 14px;cursor:pointer;border-bottom:1px solid #F1F5F9"><div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span style="width:7px;height:7px;border-radius:50%;background:${tHex};flex-shrink:0"></span><span style="font-size:12px;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(el.name||el.ifcType)}</span><span style="font-size:10px;color:${col};flex-shrink:0">${esc(el.ifcType.replace(/^Ifc/,""))}</span></div><div style="font-size:10px;color:#64748B;font-family:monospace;padding-left:12px">${esc(el.globalId)}</div></div>`; }).join(""); searchResults.innerHTML=h; searchResults.style.display="block"; searchResults.querySelectorAll(".s-row").forEach(row=>{row.addEventListener("mouseenter",()=>row.style.background="#F8FAFC");row.addEventListener("mouseleave",()=>row.style.background="");row.addEventListener("click",()=>{const gid=row.dataset.gid;const mesh=allMeshes().find(m=>m.userData.globalId===gid);if(!mesh)return;selectMesh(mesh);const box=new THREE.Box3().setFromObject(mesh);if(!box.isEmpty()){orb.tgt.copy(box.getCenter(new THREE.Vector3()));orb.sph.radius=Math.max(box.getSize(new THREE.Vector3()).length()*2.5,2);applyOrb();}searchResults.style.display="none";});});}
 searchInput.addEventListener("input",e=>renderSearch(e.target.value));
 searchInput.addEventListener("keydown",e=>{if(e.key==="Escape"){searchInput.value="";renderSearch("");}});
 searchClear.addEventListener("click",()=>{searchInput.value="";renderSearch("");searchInput.focus();});
