@@ -2,6 +2,7 @@
 project_viewer.py – BIMPruef Direct Viewer
 
 تغییر نسبت به نسخه قبلی:
+  UI Viewer یکدست و مینیمال شد: IFC dropdown با checkbox load/unload، Navigation فقط IFC Structure، Element Info شناور/قابل جابه‌جایی.
   انتهای _direct_viewer_js: بلوک VIEWER SESSION STORAGE STATE اضافه شده
   که doc_ids انتخاب‌شده را در sessionStorage مرورگر ذخیره می‌کند
   تا هنگام بازگشت از ماژول دیگر، مدل‌ها بدون نیاز به انتخاب مجدد لود شوند.
@@ -459,10 +460,15 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
     )
 
     selected_ids = {d.get("document_id") for d in selected_docs}
+    selected_count = len(selected_docs)
+    total_ifc_count = len(all_ifc_docs)
     select_rows = ""
     for i, doc in enumerate(all_ifc_docs):
-        doc_id = _e(doc.get("document_id", ""))
-        checked = "checked" if doc.get("document_id") in selected_ids else ""
+        raw_doc_id = doc.get("document_id", "")
+        doc_id = _e(raw_doc_id)
+        is_selected = raw_doc_id in selected_ids
+        checked = "checked" if is_selected else ""
+        selected_class = " is-selected" if is_selected else ""
         col = _model_color(i)
         col_light = _color_to_light_bg(col)
         ext_badge = _e(str(doc.get("file_extension", ".ifc")).upper().lstrip("."))
@@ -470,19 +476,17 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
         size = _fmt_size(doc.get("file_size", 0))
         folder = _e(doc.get("folder_path") or "Root")
         select_rows += f"""
-        <label id="lbl-{doc_id}" style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;cursor:pointer;font-size:12px;background:{'rgba(30,111,191,0.06)' if checked else 'transparent'};transition:background .12s;border:1px solid {'rgba(30,111,191,0.2)' if checked else 'transparent'}">
-          <input type="checkbox" name="doc_ids" value="{doc_id}" {checked} style="width:14px;height:14px;accent-color:{col};flex-shrink:0;cursor:pointer" onchange="onDocToggle('{doc_id}',this.checked)">
-          <div style="width:28px;height:28px;border-radius:7px;background:{col_light};display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid {col}22">
-            <span style="font-size:9px;font-weight:800;color:{col}">{ext_badge}</span>
-          </div>
-          <div style="flex:1;min-width:0">
-            <div title="{name}" style="font-weight:700;font-size:12px;color:#0D1B2A;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{name}</div>
-            <div title="{folder}" style="font-size:10px;color:#8896A5;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{size} · {folder}</div>
-          </div>
-          <span style="width:8px;height:8px;border-radius:50%;background:{col};flex-shrink:0;opacity:{'1' if checked else '0.3'}"></span>
+        <label id="lbl-{doc_id}" class="bp-model-option{selected_class}" title="{name}">
+          <input type="checkbox" name="doc_ids" value="{doc_id}" {checked} onchange="onDocToggle('{doc_id}',this.checked)">
+          <span class="bp-model-chip" style="--model-color:{col};--model-bg:{col_light}">{ext_badge}</span>
+          <span class="bp-model-text">
+            <strong>{name}</strong>
+            <small>{size} · {folder}</small>
+          </span>
+          <span class="bp-model-state" style="background:{col}"></span>
         </label>"""
 
-    empty_docs = '<div class="bp-empty">Keine Modelle im Documents-Modul.</div>'
+    empty_docs = '<div class="bp-empty bp-empty--compact">Keine Modelle im Documents-Modul.</div>'
     docs_html = select_rows if select_rows else empty_docs
     doc_options = _doc_options(all_ifc_docs) or '<option value="">Keine IFC-Dateien</option>'
 
@@ -520,8 +524,26 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
   <div class="bp-viewer-topbar">
     <a class="bp-back" href="/projects/{pid}" title="Zurück zum Projekt">← {project_name}</a>
+
+    <div id="model-dropdown" class="bp-model-dropdown">
+      <button id="model-dropdown-btn" type="button" class="bp-model-dropdown-btn" aria-expanded="false" aria-controls="model-dropdown-menu">
+        <span class="bp-model-dropdown-title">IFC Modelle</span>
+        <strong id="model-count-label">{selected_count} / {total_ifc_count}</strong>
+        <span class="bp-chevron">▾</span>
+      </button>
+      <div id="model-dropdown-menu" class="bp-model-dropdown-menu" role="dialog" aria-label="IFC Modelle auswählen">
+        <div class="bp-model-menu-head">
+          <span>Modelle</span>
+          <small>Tick setzen = laden · Tick entfernen = unload</small>
+        </div>
+        <form id="model-select-form" method="GET" action="/projects/{pid}/view">
+          {docs_html}
+        </form>
+      </div>
+    </div>
+
     <nav class="bp-tabs" role="tablist" aria-label="Viewer Navigation">
-      <button type="button" class="bp-tab-btn is-active" data-viewer-tab="navigation" aria-selected="true">Navigation</button>
+      <button type="button" class="bp-tab-btn is-active" data-viewer-tab="navigation" aria-selected="true">IFC Struktur</button>
       <button type="button" class="bp-tab-btn" data-viewer-tab="conflicts" aria-selected="false">Conflicts</button>
       <button type="button" class="bp-tab-btn" data-viewer-tab="lists" aria-selected="false">Lists</button>
       <button type="button" class="bp-tab-btn" data-viewer-tab="issues" aria-selected="false">Issues</button>
@@ -529,7 +551,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
     </nav>
     <div class="bp-topbar-tools">
       <span id="hidden-count"></span>
-      <button id="btn-show-all" type="button" class="bp-tool-btn">👁 Alle</button>
+      <button id="btn-show-all" type="button" class="bp-tool-btn">👁 Einblenden</button>
       <button id="btn-fit" type="button" class="bp-tool-btn">Fit</button>
       <button id="btn-reset" type="button" class="bp-tool-btn">Camera</button>
     </div>
@@ -540,24 +562,8 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
       <div class="bp-tab-stack">
         <section id="tab-navigation" class="bp-tab-panel bp-nav-panel is-active">
           <div class="bp-section-head">
-            <span>📁 IFC Dateien</span>
-            <button id="btn-apply-select" type="button" class="bp-primary-btn">✓ Laden</button>
-          </div>
-          <div class="bp-doc-list">
-            <form id="model-select-form" method="GET" action="/projects/{pid}/view">
-              {docs_html}
-            </form>
-          </div>
-          <div class="bp-doc-actions">
-            <button type="button" onclick="toggleAllDocs(true)" class="bp-small-btn" style="flex:1">Alle</button>
-            <button type="button" onclick="toggleAllDocs(false)" class="bp-small-btn" style="flex:1">Keine</button>
-          </div>
-          <div class="bp-section-head">
             <span>🏗 IFC Struktur</span>
-            <span style="display:flex;gap:8px">
-              <button id="btn-cat-all" type="button" class="bp-small-btn">Alle</button>
-              <button id="btn-cat-none" type="button" class="bp-small-btn">Keine</button>
-            </span>
+            <small>kompakt</small>
           </div>
           <div id="cat-scroll" class="bp-cat-scroll">
             <div class="bp-empty" style="margin:10px">Wird geladen…</div>
@@ -567,7 +573,10 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
         <section id="tab-conflicts" class="bp-tab-panel">
           <div class="bp-panel-scroll">
-            <div class="bp-section-head" style="margin:-10px -10px 10px">Conflicts</div>
+            <div class="bp-module-head">
+              <div><strong>Conflicts</strong><small>Clash-Analyse aus dem Clash-Modul</small></div>
+              <a class="bp-module-link" href="/projects/{pid}/clash">Modul öffnen ↗</a>
+            </div>
             <label class="bp-field">Gruppe A<select id="clash-a">{doc_options}</select></label>
             <label class="bp-field">Gruppe B<select id="clash-b">{doc_options}</select></label>
             <label class="bp-field">Toleranz (m)<input id="clash-tolerance" type="number" step="0.01" min="0" value="0.01"></label>
@@ -578,7 +587,10 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
         <section id="tab-lists" class="bp-tab-panel">
           <div class="bp-panel-scroll">
-            <div class="bp-section-head" style="margin:-10px -10px 10px">Lists</div>
+            <div class="bp-module-head">
+              <div><strong>Lists</strong><small>Elementlisten aus dem List-Modul</small></div>
+              <a class="bp-module-link" href="/projects/{pid}/list">Modul öffnen ↗</a>
+            </div>
             <label class="bp-field">Datei<select id="list-doc">{doc_options}</select></label>
             <label class="bp-field">IFC-Typ<input id="list-type-filter" type="text" placeholder="z.B. IfcWall"></label>
             <label class="bp-field">Name<input id="list-name-filter" type="text" placeholder="Name enthält …"></label>
@@ -589,14 +601,20 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
         <section id="tab-issues" class="bp-tab-panel">
           <div class="bp-panel-scroll">
-            <div class="bp-section-head" style="margin:-10px -10px 10px">Issues</div>
+            <div class="bp-module-head">
+              <div><strong>Issues</strong><small>Issue-Liste aus dem Issues-Modul</small></div>
+              <a class="bp-module-link" href="/projects/{pid}/issues">Modul öffnen ↗</a>
+            </div>
             <div id="issues-results" class="bp-results"><div class="bp-empty">Tab öffnen lädt Issues automatisch.</div></div>
           </div>
         </section>
 
         <section id="tab-checking" class="bp-tab-panel">
           <div class="bp-panel-scroll">
-            <div class="bp-section-head" style="margin:-10px -10px 10px">Checking</div>
+            <div class="bp-module-head">
+              <div><strong>Checking</strong><small>Regelprüfung aus dem Checking-Modul</small></div>
+              <a class="bp-module-link" href="/projects/{pid}/checking">Modul öffnen ↗</a>
+            </div>
             <label class="bp-field">Datei<select id="checking-doc">{doc_options}</select></label>
             <div style="display:flex;gap:6px;margin-bottom:8px">
               <button id="btn-rules-all" type="button" class="bp-small-btn" style="flex:1">Alle Regeln</button>
@@ -608,39 +626,40 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
           </div>
         </section>
       </div>
-
-      <section id="info-panel" class="bp-info-panel">
-        <div class="bp-info-head">
-          <span id="info-panel-title">Element Info</span>
-          <button id="info-close" type="button" class="bp-info-close" title="Auswahl leeren">✕</button>
-        </div>
-        <div id="info-body" class="bp-info-body">
-          <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>
-        </div>
-      </section>
     </aside>
 
     <main id="canvas-wrap" class="bp-canvas-wrap">
       {no_models_hint}
       <canvas id="three-canvas"></canvas>
 
-      <div id="search-bar" style="position:absolute;top:14px;left:14px;z-index:10;width:310px">
+      <div id="search-bar" class="bp-search-bar">
         <div style="display:flex;gap:5px">
           <div style="flex:1;position:relative">
             <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none" width="13" height="13" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            <input id="gid-search" type="text" placeholder="GlobalId suchen…" style="width:100%;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#0D1B2A;padding:8px 10px 8px 30px;border-radius:9px;font-size:12px;outline:none;box-shadow:0 2px 10px rgba(13,27,42,.08);font-family:'Inter',system-ui,sans-serif" autocomplete="off">
+            <input id="gid-search" type="text" placeholder="GlobalId suchen…" class="bp-search-input" autocomplete="off">
           </div>
-          <button id="search-clear" style="display:none;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#8896A5;border-radius:9px;padding:7px 11px;cursor:pointer;font-size:12px;box-shadow:0 2px 10px rgba(13,27,42,.08)">✕</button>
+          <button id="search-clear" class="bp-search-clear">✕</button>
         </div>
-        <div id="search-results" style="display:none;margin-top:5px;background:rgba(255,255,255,.98);border:1px solid #E2E8F0;border-radius:9px;max-height:280px;overflow-y:auto;box-shadow:0 6px 20px rgba(13,27,42,.12)"></div>
+        <div id="search-results" class="bp-search-results"></div>
       </div>
 
-      <div style="position:absolute;bottom:14px;right:14px;font-size:10px;color:#8896A5;background:rgba(255,255,255,.88);padding:5px 11px;border-radius:7px;border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)">
-        LMB Drehen · MMB Verschieben · Scroll Zoom · Leertaste Ausblenden
+      <button id="info-float-toggle" type="button" class="bp-info-toggle">Element Info</button>
+      <section id="info-panel" class="bp-info-panel" aria-label="Element Info">
+        <div id="info-drag-handle" class="bp-info-head">
+          <span id="info-panel-title">Element Info</span>
+          <button id="info-close" type="button" class="bp-info-close" title="Fenster schließen">✕</button>
+        </div>
+        <div id="info-body" class="bp-info-body">
+          <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>
+        </div>
+      </section>
+
+      <div class="bp-help-hint">
+        LMB Drehen · MMB Verschieben · Scroll Zoom · Leertaste Ausblenden · Doppelklick öffnet Info
       </div>
 
-      <div id="loading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(240,242,245,.96);z-index:20">
-        <div style="width:46px;height:46px;border:3px solid #BFDBFE;border-top-color:#1E6FBF;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:18px"></div>
+      <div id="loading" class="bp-loading">
+        <div class="bp-spinner"></div>
         <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0;font-family:inherit">Verbindung zu R2 wird hergestellt…</p>
         <div id="load-progress" style="margin-top:14px;width:240px;height:3px;background:#E2E8F0;border-radius:2px;overflow:hidden">
           <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;transition:width .4s ease;border-radius:2px"></div>
@@ -654,31 +673,57 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 
 <style>
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-.bp-viewer-shell{{height:calc(100vh - 52px);display:flex;flex-direction:column;overflow:hidden;background:#F0F2F5;color:#0D1B2A;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}}
-.bp-viewer-topbar{{height:46px;min-height:46px;background:#FFFFFF;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;gap:14px;padding:0 14px;box-shadow:0 1px 4px rgba(13,27,42,.04);z-index:12}}
-.bp-back{{font-weight:700;color:#0D1B2A;text-decoration:none;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}}
-.bp-tabs{{display:flex;align-items:center;gap:4px;height:100%;flex:1;min-width:0}}
-.bp-tab-btn{{border:none;background:transparent;color:#64748B;font-size:12px;font-weight:650;padding:8px 10px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap}}
+.bp-viewer-shell{{height:calc(100vh - 52px);display:flex;flex-direction:column;overflow:hidden;background:#F3F5F8;color:#0D1B2A;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}}
+.bp-viewer-topbar{{height:44px;min-height:44px;background:#FFFFFF;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;gap:10px;padding:0 10px;box-shadow:0 1px 4px rgba(13,27,42,.04);z-index:30}}
+.bp-back{{font-weight:750;color:#0D1B2A;text-decoration:none;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;flex-shrink:0}}
+.bp-model-dropdown{{position:relative;flex-shrink:0}}
+.bp-model-dropdown-btn{{height:30px;display:flex;align-items:center;gap:7px;background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;padding:0 9px;color:#0D1B2A;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}}
+.bp-model-dropdown-btn:hover,.bp-model-dropdown.is-open .bp-model-dropdown-btn{{background:#EFF6FF;border-color:#93C5FD}}
+.bp-model-dropdown-title{{color:#475569;font-weight:750}}
+#model-count-label{{font-size:11px;color:#1E40AF;background:#DBEAFE;border-radius:999px;padding:2px 7px;line-height:1}}
+.bp-chevron{{font-size:10px;color:#64748B}}
+.bp-model-dropdown-menu{{display:none;position:absolute;top:36px;left:0;width:min(360px,calc(100vw - 24px));max-height:min(430px,70vh);overflow:hidden;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:12px;box-shadow:0 18px 44px rgba(15,23,42,.18);z-index:80}}
+.bp-model-dropdown.is-open .bp-model-dropdown-menu{{display:block}}
+.bp-model-menu-head{{padding:9px 10px;border-bottom:1px solid #E2E8F0;background:#F8FAFC;display:flex;justify-content:space-between;gap:12px;align-items:center}}
+.bp-model-menu-head span{{font-size:11px;font-weight:800;color:#0D1B2A;text-transform:uppercase;letter-spacing:.5px}}
+.bp-model-menu-head small{{font-size:10px;color:#64748B;white-space:nowrap}}
+#model-select-form{{max-height:360px;overflow-y:auto;padding:5px}}
+.bp-model-option{{display:flex;align-items:center;gap:7px;min-height:34px;padding:5px 7px;border-radius:8px;border:1px solid transparent;cursor:pointer;font-size:11px;transition:background .12s,border-color .12s}}
+.bp-model-option:hover{{background:#F8FAFC;border-color:#E2E8F0}}
+.bp-model-option.is-selected{{background:#EFF6FF;border-color:#BFDBFE}}
+.bp-model-option input{{width:13px;height:13px;accent-color:#1E6FBF;flex-shrink:0;cursor:pointer}}
+.bp-model-chip{{width:26px;height:22px;border-radius:6px;background:var(--model-bg,#F1F5F9);border:1px solid color-mix(in srgb,var(--model-color,#64748B) 26%,transparent);color:var(--model-color,#64748B);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:850;flex-shrink:0}}
+.bp-model-text{{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.12}}
+.bp-model-text strong{{font-size:11px;color:#0D1B2A;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.bp-model-text small{{font-size:9.5px;color:#8896A5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}}
+.bp-model-state{{width:7px;height:7px;border-radius:50%;opacity:.22;flex-shrink:0}}
+.bp-model-option.is-selected .bp-model-state{{opacity:1}}
+.bp-tabs{{display:flex;align-items:center;gap:3px;height:100%;flex:1;min-width:0;overflow:hidden}}
+.bp-tab-btn{{border:none;background:transparent;color:#64748B;font-size:12px;font-weight:650;padding:7px 8px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap}}
 .bp-tab-btn:hover{{background:#F1F5F9;color:#0D1B2A}}
 .bp-tab-btn.is-active{{background:#EFF6FF;color:#1E40AF}}
-.bp-topbar-tools{{display:flex;align-items:center;gap:8px;flex-shrink:0}}
-.bp-tool-btn{{font-size:12px;padding:7px 12px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;box-shadow:0 1px 4px rgba(13,27,42,.06);font-family:inherit;font-weight:600}}
+.bp-topbar-tools{{display:flex;align-items:center;gap:6px;flex-shrink:0}}
+.bp-tool-btn{{font-size:12px;padding:6px 10px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;box-shadow:0 1px 4px rgba(13,27,42,.06);font-family:inherit;font-weight:650}}
 .bp-tool-btn:hover{{background:#F8FAFC;transform:translateY(-1px)}}
 #btn-show-all{{display:none;color:#DC2626;background:#FEF2F2;border-color:rgba(220,38,38,.25)}}
 #hidden-count{{font-size:11px;color:#DC2626;display:none;background:#FEF2F2;padding:5px 9px;border-radius:7px;border:1px solid rgba(220,38,38,.2)}}
 .bp-main{{flex:1;min-height:0;display:flex;overflow:hidden}}
-.bp-sidebar{{width:280px;min-width:280px;background:#FFFFFF;border-right:1px solid #E2E8F0;display:flex;flex-direction:column;overflow:hidden;box-shadow:2px 0 8px rgba(13,27,42,.04);z-index:5}}
+.bp-sidebar{{width:260px;min-width:260px;background:#FFFFFF;border-right:1px solid #E2E8F0;display:flex;flex-direction:column;overflow:hidden;box-shadow:2px 0 8px rgba(13,27,42,.04);z-index:5}}
 .bp-tab-stack{{flex:1;min-height:0;display:flex;overflow:hidden}}
 .bp-tab-panel{{display:none;flex:1;min-height:0;overflow:hidden;flex-direction:column;background:#FFFFFF}}
 .bp-tab-panel.is-active{{display:flex}}
 .bp-panel-scroll{{flex:1;min-height:0;overflow-y:auto;padding:10px;background:#FFFFFF}}
 .bp-nav-panel{{padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden}}
-.bp-section-head{{padding:9px 12px;font-size:10px;font-weight:800;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
+.bp-section-head{{padding:9px 12px;font-size:10px;font-weight:850;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
+.bp-section-head small{{text-transform:none;letter-spacing:0;font-size:10px;font-weight:650;color:#94A3B8}}
+.bp-module-head{{margin:-10px -10px 10px;padding:9px 10px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:10px}}
+.bp-module-head strong{{display:block;font-size:12px;color:#0D1B2A}}
+.bp-module-head small{{display:block;font-size:10px;color:#64748B;margin-top:2px;line-height:1.25}}
+.bp-module-link{{font-size:10px;font-weight:750;color:#1E40AF;text-decoration:none;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:999px;padding:4px 8px;white-space:nowrap}}
+.bp-module-link:hover{{background:#DBEAFE;text-decoration:none}}
 .bp-small-btn{{font-size:10px;padding:4px 9px;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:5px;cursor:pointer;color:#64748B;font-weight:700;font-family:inherit}}
-.bp-primary-btn{{font-size:11px;padding:7px 10px;background:#1E6FBF;border:1px solid #1E6FBF;color:#fff;border-radius:7px;cursor:pointer;font-weight:700;font-family:inherit}}
+.bp-primary-btn{{font-size:11px;padding:7px 10px;background:#1E6FBF;border:1px solid #1E6FBF;color:#fff;border-radius:7px;cursor:pointer;font-weight:750;font-family:inherit}}
 .bp-primary-btn:hover{{background:#175A9D}}
-.bp-doc-list{{padding:7px 8px;border-bottom:1px solid #E2E8F0;max-height:168px;overflow-y:auto;flex-shrink:0}}
-.bp-doc-actions{{padding:7px 8px;display:flex;gap:6px;border-bottom:1px solid #E2E8F0;flex-shrink:0}}
 .bp-cat-scroll{{flex:1;min-height:0;overflow-y:auto;padding:4px 0;background:#FAFBFC}}
 #load-status{{padding:7px 12px;font-size:11px;color:#64748B;border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px;display:flex;align-items:center}}
 .bp-field{{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:11px;color:#64748B;font-weight:700}}
@@ -687,6 +732,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 .bp-results{{display:flex;flex-direction:column;gap:8px;margin-top:10px;font-size:12px}}
 .bp-summary{{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:9px 10px;color:#334155;font-size:12px;margin-bottom:8px}}
 .bp-empty{{background:#F8FAFC;border:1px dashed #CBD5E1;border-radius:8px;padding:12px;color:#94A3B8;font-size:12px;text-align:center;line-height:1.5}}
+.bp-empty--compact{{padding:10px;margin:5px}}
 .bp-error{{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px;color:#991B1B;font-size:12px;line-height:1.45}}
 .bp-result-card,.bp-issue-card{{background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:9px 10px;box-shadow:0 1px 3px rgba(13,27,42,.04);font-size:11px;line-height:1.45;overflow:hidden}}
 .bp-result-error{{border-left:4px solid #DC2626;background:#FEF2F2}}
@@ -703,14 +749,31 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 .bp-table td{{border-bottom:1px solid #F1F5F9;padding:7px;color:#334155;vertical-align:top}}
 .bp-rule-row{{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border:1px solid #E2E8F0;border-radius:7px;margin-bottom:6px;background:#F8FAFC;color:#334155;font-size:11px;font-weight:650;cursor:pointer}}
 .bp-rule-row input{{margin-top:1px;accent-color:#1E6FBF}}
-.bp-info-panel{{max-height:280px;min-height:150px;border-top:1px solid #E2E8F0;background:#FFFFFF;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}}
-.bp-info-head{{padding:9px 12px;font-size:10px;font-weight:800;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
-.bp-info-close{{border:none;background:transparent;color:#94A3B8;cursor:pointer;font-size:14px;line-height:1;padding:0 3px}}
-.bp-info-body{{overflow-y:auto;padding:12px;font-size:12px;min-height:0;flex:1}}
 .bp-canvas-wrap{{flex:1;min-width:0;position:relative;overflow:hidden;background:#F0F2F5}}
 #three-canvas{{width:100%!important;height:100%!important;display:block}}
-#cat-scroll::-webkit-scrollbar,.bp-panel-scroll::-webkit-scrollbar,.bp-info-body::-webkit-scrollbar,.bp-doc-list::-webkit-scrollbar,.bp-table-wrap::-webkit-scrollbar{{width:5px;height:5px}}
-#cat-scroll::-webkit-scrollbar-thumb,.bp-panel-scroll::-webkit-scrollbar-thumb,.bp-info-body::-webkit-scrollbar-thumb,.bp-doc-list::-webkit-scrollbar-thumb,.bp-table-wrap::-webkit-scrollbar-thumb{{background:#CBD5E1;border-radius:3px}}
+.bp-search-bar{{position:absolute;top:12px;left:12px;z-index:12;width:min(310px,calc(100% - 24px))}}
+.bp-search-input{{width:100%;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#0D1B2A;padding:8px 10px 8px 30px;border-radius:9px;font-size:12px;outline:none;box-shadow:0 2px 10px rgba(13,27,42,.08);font-family:'Inter',system-ui,sans-serif}}
+.bp-search-clear{{display:none;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#8896A5;border-radius:9px;padding:7px 11px;cursor:pointer;font-size:12px;box-shadow:0 2px 10px rgba(13,27,42,.08)}}
+.bp-search-results{{display:none;margin-top:5px;background:rgba(255,255,255,.98);border:1px solid #E2E8F0;border-radius:9px;max-height:280px;overflow-y:auto;box-shadow:0 6px 20px rgba(13,27,42,.12)}}
+.bp-info-toggle{{position:absolute;right:14px;top:14px;z-index:17;display:none;align-items:center;gap:6px;padding:7px 11px;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:999px;color:#0D1B2A;font-size:12px;font-weight:750;box-shadow:0 6px 18px rgba(15,23,42,.12);cursor:pointer;font-family:inherit}}
+.bp-info-panel{{position:absolute;top:58px;right:14px;width:min(360px,calc(100% - 28px));max-height:min(72vh,640px);min-height:160px;background:rgba(255,255,255,.98);border:1px solid #CBD5E1;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 50px rgba(15,23,42,.18);z-index:18;backdrop-filter:blur(6px)}}
+.bp-info-panel.is-closed{{display:none}}
+.bp-info-panel.is-dragging{{user-select:none;box-shadow:0 24px 64px rgba(15,23,42,.24)}}
+.bp-info-head{{padding:9px 12px;font-size:10px;font-weight:850;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;cursor:move}}
+.bp-info-close{{border:none;background:#FFFFFF;color:#64748B;cursor:pointer;font-size:14px;line-height:1;padding:3px 6px;border-radius:6px;border:1px solid #E2E8F0}}
+.bp-info-close:hover{{color:#DC2626;background:#FEF2F2;border-color:#FECACA}}
+.bp-info-body{{overflow-y:auto;padding:12px;font-size:12px;min-height:0;flex:1}}
+.bp-help-hint{{position:absolute;bottom:14px;right:14px;font-size:10px;color:#8896A5;background:rgba(255,255,255,.88);padding:5px 11px;border-radius:7px;border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)}}
+.bp-loading{{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(240,242,245,.96);z-index:20}}
+.bp-spinner{{width:46px;height:46px;border:3px solid #BFDBFE;border-top-color:#1E6FBF;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:18px}}
+#cat-scroll::-webkit-scrollbar,.bp-panel-scroll::-webkit-scrollbar,.bp-info-body::-webkit-scrollbar,#model-select-form::-webkit-scrollbar,.bp-table-wrap::-webkit-scrollbar{{width:5px;height:5px}}
+#cat-scroll::-webkit-scrollbar-thumb,.bp-panel-scroll::-webkit-scrollbar-thumb,.bp-info-body::-webkit-scrollbar-thumb,#model-select-form::-webkit-scrollbar-thumb,.bp-table-wrap::-webkit-scrollbar-thumb{{background:#CBD5E1;border-radius:3px}}
+@media (max-width: 980px){{
+  .bp-sidebar{{width:230px;min-width:230px}}
+  .bp-back{{max-width:150px}}
+  .bp-tab-btn{{padding:7px 6px;font-size:11px}}
+  .bp-tool-btn{{padding:6px 8px}}
+}}
 </style>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -1139,10 +1202,10 @@ function buildCategoryUI(){
     const modelBlock=document.createElement("div"); modelBlock.style.cssText="border-bottom:1px solid #CBD5E1;background:#FFFFFF;flex-shrink:0";
     const mh=document.createElement("div");
     mh.style.cssText=`display:flex;align-items:center;gap:6px;padding:5px 8px 5px 9px;cursor:pointer;user-select:none;border-left:3px solid ${mColor};background:linear-gradient(90deg,${colorWithAlpha(mColor,"18")},#F8FAFC 70%);opacity:${mOn?"1":".45"};line-height:1.15`;
-    mh.innerHTML=`<span class="mtog" style="font-size:9px;color:${mColor};width:9px;flex-shrink:0;transition:transform .15s">▼</span><input class="model-cb" type="checkbox" ${mOn?"checked":""} data-doc-id="${esc(docId)}" style="width:12px;height:12px;accent-color:${mColor};flex-shrink:0;cursor:pointer;margin:0"><span style="width:9px;height:9px;border-radius:50%;background:${mColor};flex-shrink:0"></span><span style="font-size:11px;font-weight:750;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(modelLabel(docId))}">${esc(modelLabel(docId))}</span><span style="font-size:9px;color:${mColor};font-weight:700;background:${colorWithAlpha(mColor,"16")};padding:1px 5px;border-radius:8px;flex-shrink:0">${mCount}</span>`;
+    mh.innerHTML=`<span class="mtog" style="font-size:9px;color:${mColor};width:9px;flex-shrink:0;transition:transform .15s">▶</span><input class="model-cb" type="checkbox" ${mOn?"checked":""} data-doc-id="${esc(docId)}" style="width:12px;height:12px;accent-color:${mColor};flex-shrink:0;cursor:pointer;margin:0"><span style="width:9px;height:9px;border-radius:50%;background:${mColor};flex-shrink:0"></span><span style="font-size:11px;font-weight:750;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(modelLabel(docId))}">${esc(modelLabel(docId))}</span><span style="font-size:9px;color:${mColor};font-weight:700;background:${colorWithAlpha(mColor,"16")};padding:1px 5px;border-radius:8px;flex-shrink:0">${mCount}</span>`;
     modelBlock.appendChild(mh);
     const mcb=mh.querySelector(".model-cb"); if(mcb) mcb.indeterminate=mOn&&!mAllOn;
-    const mb=document.createElement("div"); mb.style.cssText="padding:0;background:#FFFFFF";
+    const mb=document.createElement("div"); mb.style.cssText="display:none;padding:0;background:#FFFFFF";
     for(const entity of entities){
       const tg=entitiesMap[entity]||{}, tn=Object.keys(tg).sort((a,b)=>displayTypeName(a).localeCompare(displayTypeName(b),"de",{sensitivity:"base"}));
       if(!tn.length) continue;
@@ -1152,10 +1215,10 @@ function buildCategoryUI(){
       const category=document.createElement("div"); category.style.cssText="border-bottom:1px solid #EEF2F7;background:#FFFFFF;flex-shrink:0";
       const ch=document.createElement("div");
       ch.style.cssText=`display:flex;align-items:center;gap:5px;padding:3px 8px 3px 21px;cursor:pointer;user-select:none;border-left:3px solid ${colorHex};background:linear-gradient(90deg,${colorWithAlpha(colorHex,"10")},#FFFFFF 65%);opacity:${entityOn?"1":".45"};line-height:1.1;min-height:22px;box-sizing:border-box`;
-      ch.innerHTML=`<span class="etog" style="font-size:8px;color:${colorHex};width:8px;flex-shrink:0;transition:transform .15s">▼</span><input class="entity-cb" type="checkbox" ${entityOn?"checked":""} data-doc-id="${esc(docId)}" data-entity="${esc(entity)}" style="width:11px;height:11px;accent-color:${colorHex};flex-shrink:0;cursor:pointer;margin:0"><span style="width:8px;height:8px;border-radius:50%;background:${colorHex};flex-shrink:0"></span><span style="font-size:11px;font-weight:700;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(entity)}">${esc(displayEntityName(entity))}</span><span style="font-size:9px;color:${colorHex};font-weight:700;background:${colorWithAlpha(colorHex,"16")};padding:0 5px;border-radius:8px;flex-shrink:0">${count}</span>`;
+      ch.innerHTML=`<span class="etog" style="font-size:8px;color:${colorHex};width:8px;flex-shrink:0;transition:transform .15s">▶</span><input class="entity-cb" type="checkbox" ${entityOn?"checked":""} data-doc-id="${esc(docId)}" data-entity="${esc(entity)}" style="width:11px;height:11px;accent-color:${colorHex};flex-shrink:0;cursor:pointer;margin:0"><span style="width:8px;height:8px;border-radius:50%;background:${colorHex};flex-shrink:0"></span><span style="font-size:11px;font-weight:700;color:#0D1B2A;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(entity)}">${esc(displayEntityName(entity))}</span><span style="font-size:9px;color:${colorHex};font-weight:700;background:${colorWithAlpha(colorHex,"16")};padding:0 5px;border-radius:8px;flex-shrink:0">${count}</span>`;
       category.appendChild(ch);
       const ecb=ch.querySelector(".entity-cb"); if(ecb) ecb.indeterminate=entityOn&&!allTypesOn;
-      const cb=document.createElement("div"); cb.style.cssText="padding:1px 0 3px;background:#FFFFFF";
+      const cb=document.createElement("div"); cb.style.cssText="display:none;padding:1px 0 3px;background:#FFFFFF";
       for(const typeName of tn){
         const elements=tg[typeName]||[], k=typeKey(docId,entity,typeName), vis=modelVisible[modelKey(docId)]!==false&&entityVisible[eKey]!==false&&typeVisible[k]!==false, isFlat=FLAT_TYPES.has(entity);
         const typeRow=document.createElement("div");
@@ -1190,10 +1253,10 @@ function buildCategoryUI(){
         typeRow.addEventListener("mouseleave",()=>{if(el2.style.display==="none")typeRow.style.background="";});
       }
       category.appendChild(cb); mb.appendChild(category);
-      ch.addEventListener("click",e=>{if(e.target.closest("input,label"))return; const tog=ch.querySelector(".etog"),collapsed=cb.style.display==="none"; cb.style.display=collapsed?"":"none"; tog.style.transform=collapsed?"":"rotate(-90deg)";});
+      ch.addEventListener("click",e=>{if(e.target.closest("input,label"))return; const tog=ch.querySelector(".etog"),collapsed=cb.style.display==="none"; cb.style.display=collapsed?"":"none"; if(tog)tog.textContent=collapsed?"▼":"▶";});
     }
     modelBlock.appendChild(mb); list.appendChild(modelBlock);
-    mh.addEventListener("click",e=>{if(e.target.closest("input,label"))return; const tog=mh.querySelector(".mtog"),collapsed=mb.style.display==="none"; mb.style.display=collapsed?"":"none"; tog.style.transform=collapsed?"":"rotate(-90deg)";});
+    mh.addEventListener("click",e=>{if(e.target.closest("input,label"))return; const tog=mh.querySelector(".mtog"),collapsed=mb.style.display==="none"; mb.style.display=collapsed?"":"none"; if(tog)tog.textContent=collapsed?"▼":"▶";});
   }
   list.onchange=e=>{
     const target=e.target;
@@ -1300,6 +1363,46 @@ let _editExpressId  = null;
 let _editElemData   = null;
 
 const HIGHLIGHT = new THREE.Color(0xff6600);
+const infoPanel = document.getElementById("info-panel");
+const infoToggle = document.getElementById("info-float-toggle");
+const infoDragHandle = document.getElementById("info-drag-handle");
+
+function openInfoPanel(){
+  if(infoPanel) infoPanel.classList.remove("is-closed");
+  if(infoToggle) infoToggle.style.display="none";
+}
+function closeInfoPanel(){
+  if(infoPanel) infoPanel.classList.add("is-closed");
+  if(infoToggle) infoToggle.style.display="inline-flex";
+}
+function resetInfoBody(message="Klicken Sie auf ein Element<br>für Details."){
+  if(infoBody) infoBody.innerHTML=`<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">${message}</div>`;
+}
+infoToggle?.addEventListener("click", openInfoPanel);
+
+(function enableInfoPanelDrag(){
+  if(!infoPanel||!infoDragHandle||!wrap) return;
+  let dragging=false, sx=0, sy=0, ox=0, oy=0;
+  infoDragHandle.addEventListener("mousedown", e=>{
+    if(e.target.closest("button")) return;
+    const panelRect=infoPanel.getBoundingClientRect();
+    const wrapRect=wrap.getBoundingClientRect();
+    dragging=true; sx=e.clientX; sy=e.clientY;
+    ox=panelRect.left-wrapRect.left; oy=panelRect.top-wrapRect.top;
+    infoPanel.classList.add("is-dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", e=>{
+    if(!dragging) return;
+    const maxX=Math.max(0,wrap.clientWidth-infoPanel.offsetWidth-8);
+    const maxY=Math.max(0,wrap.clientHeight-infoPanel.offsetHeight-8);
+    const x=Math.min(maxX,Math.max(8,ox+e.clientX-sx));
+    const y=Math.min(maxY,Math.max(8,oy+e.clientY-sy));
+    infoPanel.style.left=x+"px"; infoPanel.style.top=y+"px";
+    infoPanel.style.right="auto"; infoPanel.style.bottom="auto";
+  });
+  window.addEventListener("mouseup",()=>{ if(dragging){ dragging=false; infoPanel.classList.remove("is-dragging"); } });
+})();
 
 function _inpS(){
   return `background:#F8FAFC;border:1px solid #CBD5E1;color:#0D1B2A;
@@ -1477,6 +1580,7 @@ function removePropRow(btn){ btn.closest(".prop-edit-row")?.remove(); markDirty(
 
 function enterEditMode(){
   if(!_editElemData) return;
+  openInfoPanel();
   _editMode=true;
   document.getElementById("info-panel-title").textContent="Bearbeiten";
   _renderEditMode(_editElemData);
@@ -1538,6 +1642,7 @@ async function saveEdits(mode){
 }
 
 function showInfo(m){
+  openInfoPanel();
   const d=m.userData;
   _editDocumentId=d.documentId||d.docId||"";
   _editExpressId=d.expressId;
@@ -1548,56 +1653,77 @@ function showInfo(m){
 }
 
 const raycaster=new THREE.Raycaster(), mouse=new THREE.Vector2();
-canvas.addEventListener("mousedown",()=>{mouseMoved=false;});
-canvas.addEventListener("mousemove",()=>{mouseMoved=true;});
-canvas.addEventListener("mouseup",e=>{
-  if(e.button!==0||mouseMoved)return;
+function pickVisibleMeshFromEvent(e){
   const rect=canvas.getBoundingClientRect();
   mouse.x=((e.clientX-rect.left)/rect.width)*2-1;
   mouse.y=-((e.clientY-rect.top)/rect.height)*2+1;
   raycaster.setFromCamera(mouse,camera);
   const hits=raycaster.intersectObjects(allMeshes().filter(m=>m.visible),false);
-  if(hits.length>0){
-    const m=hits[0].object;
-    if(selectedMesh&&selectedMesh!==m)selectedMesh.material.color.copy(selectedMesh.userData._origColor);
-    if(!m.userData._origColor)m.userData._origColor=m.material.color.clone();
-    m.material.color.copy(HIGHLIGHT); selectedMesh=m;
-    showInfo(m);
-    const panel=document.getElementById("info-panel"); if(panel)panel.style.display="flex";
+  return hits.length?hits[0].object:null;
+}
+function focusCameraOnMesh(m,factor=2.5){
+  const box=new THREE.Box3().setFromObject(m);
+  if(!box.isEmpty()){
+    orb.tgt.copy(box.getCenter(new THREE.Vector3()));
+    orb.sph.radius=Math.max(box.getSize(new THREE.Vector3()).length()*factor,2);
+    applyOrb();
+  }
+}
+canvas.addEventListener("mousedown",()=>{mouseMoved=false;});
+canvas.addEventListener("mousemove",()=>{mouseMoved=true;});
+canvas.addEventListener("mouseup",e=>{
+  if(e.button!==0||mouseMoved)return;
+  const m=pickVisibleMeshFromEvent(e);
+  if(m){
+    selectMesh(m);
   } else {
     if(selectedMesh){selectedMesh.material.color.copy(selectedMesh.userData._origColor);selectedMesh=null;}
-    infoBody.innerHTML='<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>';
+    resetInfoBody();
   }
+});
+canvas.addEventListener("dblclick",e=>{
+  const m=pickVisibleMeshFromEvent(e);
+  if(!m) return;
+  selectMesh(m);
+  openInfoPanel();
+  focusCameraOnMesh(m,2.5);
 });
 
 function selectMesh(m){
   if(selectedMesh&&selectedMesh!==m)selectedMesh.material.color.copy(selectedMesh.userData._origColor);
   if(!m.userData._origColor)m.userData._origColor=m.material.color.clone();
   m.material.color.copy(HIGHLIGHT); selectedMesh=m; showInfo(m);
-  const panel=document.getElementById("info-panel"); if(panel)panel.style.display="flex";
 }
 
 window.addEventListener("keydown",e=>{
   if(e.code!=="Space"||!selectedMesh)return; e.preventDefault();
   const id=meshInstanceKey(selectedMesh); hiddenIds.add(id); selectedMesh.visible=false;
   selectedMesh.material.color.copy(selectedMesh.userData._origColor); selectedMesh=null;
-  infoBody.innerHTML='<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0">Element ausgeblendet.</div>';
+  resetInfoBody('Element ausgeblendet.');
   updateHiddenCount();
 });
 
 document.getElementById("btn-fit")?.addEventListener("click", fitAll);
 document.getElementById("btn-reset")?.addEventListener("click",()=>{ orb.tgt.set(0,0,0); orb.sph.set(80,Math.PI/4,Math.PI/4); applyOrb(); });
 document.getElementById("btn-show-all")?.addEventListener("click",()=>{ hiddenIds.clear(); applyVisibility(); });
-document.getElementById("info-close")?.addEventListener("click",()=>{ if(selectedMesh&&selectedMesh.userData._origColor){ selectedMesh.material.color.copy(selectedMesh.userData._origColor); selectedMesh=null; } infoBody.innerHTML='<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>'; });
+document.getElementById("info-close")?.addEventListener("click", closeInfoPanel);
 
 // ════════════════════════════════════════════════════════════════════════════
-// Model-Sidebar selection
+// Compact model dropdown selection: checkbox = load, uncheck = unload
 // ════════════════════════════════════════════════════════════════════════════
+function updateModelDropdownLabel(){
+  const form=document.getElementById("model-select-form");
+  const label=document.getElementById("model-count-label");
+  if(!form||!label)return;
+  const total=form.querySelectorAll("input[name=doc_ids]").length;
+  const checked=form.querySelectorAll("input[name=doc_ids]:checked").length;
+  label.textContent=`${checked} / ${total}`;
+}
 function onDocToggle(docId,checked){
-  const lbl=document.getElementById(`lbl-${docId}`); if(!lbl)return;
-  lbl.style.background=checked?"rgba(30,111,191,0.06)":"transparent";
-  lbl.style.borderColor=checked?"rgba(30,111,191,0.2)":"transparent";
-  const dot=lbl.querySelector("span:last-child"); if(dot)dot.style.opacity=checked?"1":"0.3";
+  const lbl=document.getElementById(`lbl-${docId}`);
+  if(lbl) lbl.classList.toggle("is-selected",checked);
+  updateModelDropdownLabel();
+  scheduleDocSelectionApply();
 }
 function _saveViewerDocState(ids){
   try{
@@ -1605,19 +1731,43 @@ function _saveViewerDocState(ids){
     else sessionStorage.removeItem(VIEWER_STATE_KEY);
   }catch(_){}
 }
+let _docSelectionTimer=null;
+function scheduleDocSelectionApply(){
+  clearTimeout(_docSelectionTimer);
+  _docSelectionTimer=setTimeout(applyNavSelection,90);
+}
 function applyNavSelection(){
   const form=document.getElementById("model-select-form"); if(!form)return;
   const checked=[...form.querySelectorAll("input[name=doc_ids]:checked")].map(i=>i.value);
   _saveViewerDocState(checked);
   const url=new URL(window.location.href); url.searchParams.delete("doc_ids");
-  checked.forEach(id=>url.searchParams.append("doc_ids",id)); window.location.href=url.toString();
+  checked.forEach(id=>url.searchParams.append("doc_ids",id));
+  window.location.href=url.toString();
 }
 function applyDocSelection(){ applyNavSelection(); }
 function toggleAllDocs(v){
   const form=document.getElementById("model-select-form"); if(!form)return;
-  form.querySelectorAll("input[name=doc_ids]").forEach(c=>{c.checked=v; onDocToggle(c.value,v);});
+  form.querySelectorAll("input[name=doc_ids]").forEach(c=>{c.checked=v; const lbl=document.getElementById(`lbl-${c.value}`); if(lbl)lbl.classList.toggle("is-selected",v);});
+  updateModelDropdownLabel();
+  applyNavSelection();
 }
-document.getElementById("btn-apply-select")?.addEventListener("click",applyNavSelection);
+(function initModelDropdown(){
+  const dd=document.getElementById("model-dropdown"), btn=document.getElementById("model-dropdown-btn");
+  if(!dd||!btn)return;
+  btn.addEventListener("click",e=>{
+    e.stopPropagation();
+    const open=!dd.classList.contains("is-open");
+    dd.classList.toggle("is-open",open);
+    btn.setAttribute("aria-expanded",open?"true":"false");
+  });
+  document.addEventListener("mousedown",e=>{
+    if(!dd.contains(e.target)){
+      dd.classList.remove("is-open");
+      btn.setAttribute("aria-expanded","false");
+    }
+  });
+  updateModelDropdownLabel();
+})();
 
 // ════════════════════════════════════════════════════════════════════════════
 // GlobalId search
