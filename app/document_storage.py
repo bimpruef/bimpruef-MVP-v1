@@ -2,9 +2,13 @@
 """
 document_storage.py – Project-based document storage for BIMPruef
 
-Documents are the permanent file source for a project. R2 stores the binary
-objects; PostgreSQL stores file metadata and the folder tree. The existing
-viewer/session storage remains a temporary IFC processing cache only.
+Documents are the permanent file source for a project.
+R2 stores the binary objects; PostgreSQL stores file metadata and the folder tree.
+
+Viewer, clash, list and checking modules load IFC files directly from
+ProjectDocument/R2 by document_id.
+
+No viewer session slot cache is used.
 """
 
 import mimetypes
@@ -22,15 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import SessionLocal, engine, init_db
 from app.exceptions import NotFoundError, StorageError, ValidationError, ConflictError
 from app.models import Project, ProjectDocument, ProjectFolder
-from app.storage import (
-    MAX_FILES_PER_SESSION,
-    create_upload_session,
-    get_session_slots,
-    remove_ifc_slot,
-    save_ifc_file,
-    sanitize_filename,
-    session_exists,
-)
+
 
 try:
     from app.r2_storage import (
@@ -62,6 +58,12 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 SAFE_FOLDER_RE = re.compile(r"^[A-Za-z0-9ÄÖÜäöüß _.-]{1,120}$")
 
+def sanitize_filename(filename: str) -> str:
+    filename = filename or "uploaded.ifc"
+    filename = os.path.basename(filename)
+    filename = filename.replace(" ", "_")
+    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+    return filename[:180] or "uploaded.ifc"
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -500,70 +502,19 @@ def delete_document(account_id: str, project_id: str, document_id: str) -> None:
 
 def delete_project_documents_prefix(project_id: str, strict: bool = True) -> None:
     project_id = _validate_safe_id(project_id, "Projekt-ID")
+
     if not _r2_available() or delete_prefix_from_r2 is None:
         if strict:
-            raise StorageError("Cloudflare R2 ist nicht konfiguriert; Projektdokumente können nicht sicher gelöscht werden.")
+            raise StorageError(
+                "Cloudflare R2 ist nicht konfiguriert; "
+                "Projektdokumente können nicht sicher gelöscht werden."
+            )
         return
+
     try:
         delete_prefix_from_r2(_project_document_prefix(project_id))
     except Exception as exc:
         if strict:
-            raise StorageError(f"Dokument-Prefix konnte nicht vollständig gelöscht werden: {exc}") from exc
-
-
-def prepare_viewer_session_from_project_documents(
-    account_id: str,
-    project_id: str,
-    document_ids: list[str],
-    session_id: str = "",
-) -> str:
-    """Copy selected IFC/IFCZIP ProjectDocument objects into the viewer slot cache."""
-    clean_ids = []
-    seen = set()
-    for did in document_ids:
-        did = str(did or "").strip()
-        if not did or did in seen:
-            continue
-        clean_ids.append(_validate_safe_id(did, "Dokument-ID"))
-        seen.add(did)
-    if not clean_ids:
-        raise ValidationError("Bitte mindestens ein IFC-Modell auswählen.")
-    if len(clean_ids) > MAX_FILES_PER_SESSION:
-        raise ValidationError(f"Maximal {MAX_FILES_PER_SESSION} Modelle können gleichzeitig geladen werden.")
-
-    if not session_id or not session_exists(session_id):
-        session_id = create_upload_session()
-
-    # Reset viewer cache slots. The permanent documents stay untouched.
-    for slot in get_session_slots(session_id):
-        remove_ifc_slot(session_id, slot)
-
-    with SessionLocal() as db:
-        _get_project_for_account(db, account_id, project_id)
-        docs = (
-            db.query(ProjectDocument)
-            .filter(ProjectDocument.project_id == project_id, ProjectDocument.document_id.in_(clean_ids))
-            .all()
-        )
-        by_id = {d.document_id: d for d in docs}
-
-    for slot, did in enumerate(clean_ids, start=1):
-        doc = by_id.get(did)
-        if not doc:
-            raise NotFoundError("Ausgewähltes Dokument nicht gefunden.")
-        if doc.file_extension not in {".ifc", ".ifczip"}:
-            raise ValidationError(f"'{doc.original_filename}' ist kein IFC/IFCZIP-Modell.")
-        tmp_path = ""
-        try:
-            _, tmp_path = download_document_to_temp(account_id, project_id, did)
-            with open(tmp_path, "rb") as f:
-                file_bytes = f.read()
-            save_ifc_file(session_id, slot, file_bytes, doc.original_filename)
-        finally:
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-
-    return session_id
+            raise StorageError(
+                f"Dokument-Prefix konnte nicht vollständig gelöscht werden: {exc}"
+            ) from exc
