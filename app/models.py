@@ -14,7 +14,7 @@ def _utcnow() -> datetime:
     """Return the current UTC time as a timezone-aware datetime.
 
     ``datetime.utcnow()`` is deprecated since Python 3.12 because it returns a
-    naive datetime that is easily confused with local time.  This helper
+    naive datetime that is easily confused with local time. This helper
     centralises the replacement so every model uses the same idiom.
     """
     return datetime.now(timezone.utc)
@@ -68,8 +68,6 @@ class Project(Base):
     project_name = Column(String(255), nullable=False)
     description = Column(Text, default="", nullable=False)
     status = Column(String(40), default="active", nullable=False)
-
-    session_id = Column(String(64), nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),
@@ -191,8 +189,11 @@ class ProjectIssue(Base):
     name_2 = Column(String(255), default="", nullable=False)
     file_label_1 = Column(String(255), default="", nullable=False)
     file_label_2 = Column(String(255), default="", nullable=False)
-    slot_1 = Column(Integer, default=0, nullable=False)
-    slot_2 = Column(Integer, default=0, nullable=False)
+
+    # Direct-document architecture:
+    # old slot_1 / slot_2 fields are no longer used.
+    document_id_1 = Column(String(64), default="", nullable=False, index=True)
+    document_id_2 = Column(String(64), default="", nullable=False, index=True)
 
     payload_json = Column(Text, default="{}", nullable=False)
 
