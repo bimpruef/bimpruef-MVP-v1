@@ -423,266 +423,523 @@ def _color_to_light_bg(hex_color: str) -> str:
     return mapping.get(hex_color, "#F5F6F8")
 
 
+
+
+def _doc_options(docs) -> str:
+    """Return HTML option tags for IFC document dropdowns."""
+    return "".join(
+        f'<option value="{_e(d.get("document_id", ""))}">{_e(d.get("original_filename") or d.get("document_id") or "IFC")}</option>'
+        for d in docs
+    )
+
+
 def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_docs, error="") -> HTMLResponse:
-    from app.projects import _page, _project_subnav, _topbar_global
+    from app.projects import _page, _topbar_global
 
     pid = _e(project_id)
+    project_name = _e(project.get("project_name", "Projekt"))
 
     model_entries = []
     for i, doc in enumerate(selected_docs):
         color = _slot_color(i)
-        url   = f"/projects/{pid}/view/file/{_e(doc['document_id'])}"
+        url = f"/projects/{pid}/view/file/{_e(doc['document_id'])}"
         model_entries.append({
-            "url":        url,
-            "label":      doc["original_filename"],
-            "color":      color,
-            "documentId": doc["document_id"],
+            "url": url,
+            "label": doc.get("original_filename", "IFC"),
+            "color": color,
+            "documentId": doc.get("document_id", ""),
         })
 
     model_urls_js = ",\n".join(
-        f'{{url:{json.dumps(m["url"])},label:{json.dumps(m["label"])},color:{json.dumps(m["color"])},documentId:{json.dumps(m["documentId"])}}}'
+        '{url:' + json.dumps(m["url"]) +
+        ',label:' + json.dumps(m["label"]) +
+        ',color:' + json.dumps(m["color"]) +
+        ',documentId:' + json.dumps(m["documentId"]) + '}'
         for m in model_entries
     )
 
-    selected_ids = {d["document_id"] for d in selected_docs}
-    select_rows  = ""
+    selected_ids = {d.get("document_id") for d in selected_docs}
+    select_rows = ""
     for i, doc in enumerate(all_ifc_docs):
-        checked   = "checked" if doc["document_id"] in selected_ids else ""
-        col       = _slot_color(i)
+        doc_id = _e(doc.get("document_id", ""))
+        checked = "checked" if doc.get("document_id") in selected_ids else ""
+        col = _slot_color(i)
         col_light = _color_to_light_bg(col)
-        ext_badge = _e(doc['file_extension'].upper().lstrip('.'))
+        ext_badge = _e(str(doc.get("file_extension", ".ifc")).upper().lstrip("."))
+        name = _e(doc.get("original_filename", "IFC"))
+        size = _fmt_size(doc.get("file_size", 0))
+        folder = _e(doc.get("folder_path") or "Root")
         select_rows += f"""
-        <label style="display:flex;align-items:center;gap:9px;padding:8px 12px;
-          border-radius:7px;cursor:pointer;font-size:12px;
-          background:{'rgba(30,111,191,0.06)' if checked else 'transparent'};
-          transition:background 0.12s;border:1px solid {'rgba(30,111,191,0.2)' if checked else 'transparent'}"
-          id="lbl-{_e(doc['document_id'])}"
-          onmouseenter="if(!this.querySelector('input').checked)this.style.background='rgba(0,0,0,0.03)'"
-          onmouseleave="if(!this.querySelector('input').checked)this.style.background='transparent'">
-          <input type="checkbox" name="doc_ids" value="{_e(doc['document_id'])}" {checked}
-            style="width:14px;height:14px;accent-color:{col};flex-shrink:0;cursor:pointer"
-            onchange="onDocToggle('{_e(doc['document_id'])}',this.checked)">
-          <div style="width:28px;height:28px;border-radius:6px;background:{col_light};
-            display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid {col}22">
-            <span style="font-size:9px;font-weight:700;color:{col}">{ext_badge}</span>
+        <label id="lbl-{doc_id}" style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;cursor:pointer;font-size:12px;background:{'rgba(30,111,191,0.06)' if checked else 'transparent'};transition:background .12s;border:1px solid {'rgba(30,111,191,0.2)' if checked else 'transparent'}">
+          <input type="checkbox" name="doc_ids" value="{doc_id}" {checked} style="width:14px;height:14px;accent-color:{col};flex-shrink:0;cursor:pointer" onchange="onDocToggle('{doc_id}',this.checked)">
+          <div style="width:28px;height:28px;border-radius:7px;background:{col_light};display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid {col}22">
+            <span style="font-size:9px;font-weight:800;color:{col}">{ext_badge}</span>
           </div>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:12px;color:#0D1B2A;
-              overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-              title="{_e(doc['original_filename'])}">{_e(doc['original_filename'])}</div>
-            <div style="font-size:10px;color:#8896A5;margin-top:1px">{_fmt_size(doc.get('file_size',0))}</div>
+            <div title="{name}" style="font-weight:700;font-size:12px;color:#0D1B2A;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{name}</div>
+            <div title="{folder}" style="font-size:10px;color:#8896A5;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{size} · {folder}</div>
           </div>
           <span style="width:8px;height:8px;border-radius:50%;background:{col};flex-shrink:0;opacity:{'1' if checked else '0.3'}"></span>
         </label>"""
 
-    error_html = f"""
-    <div style="position:absolute;top:0;left:0;right:0;z-index:30;
-      padding:10px 16px;background:#FEE2E2;color:#991B1B;font-size:12px;
-      border-bottom:1px solid rgba(153,27,27,0.2);display:flex;align-items:center;gap:8px">
-      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      {_e(error)}
-    </div>""" if error else ""
+    empty_docs = '<div class="bp-empty">Keine Modelle im Documents-Modul.</div>'
+    docs_html = select_rows if select_rows else empty_docs
+    doc_options = _doc_options(all_ifc_docs) or '<option value="">Keine IFC-Dateien</option>'
+
+    rules = [
+        ("missing_names", "Missing Names"),
+        ("missing_global_id", "Missing GlobalId"),
+        ("missing_spaces", "Missing Spaces"),
+        ("door_without_name", "Door without Name"),
+        ("window_without_name", "Window without Name"),
+        ("wall_without_fire_rating", "Wall without FireRating"),
+        ("external_wall_check", "External Wall Check"),
+    ]
+    rule_rows = "".join(
+        f'<label class="bp-rule-row"><input type="checkbox" name="checking_rule" value="{_e(rule_id)}" checked><span>{_e(label)}</span></label>'
+        for rule_id, label in rules
+    )
+
+    error_html = f'<div class="bp-error" style="position:absolute;top:54px;left:292px;right:14px;z-index:30">{_e(error)}</div>' if error else ""
 
     no_models_hint = ""
     if not all_ifc_docs:
-        no_models_hint = f"""
-        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-          text-align:center;z-index:10;pointer-events:none">
-          <div style="background:rgba(255,255,255,0.95);border:1px solid #E2E8F0;
-            border-radius:12px;padding:32px 40px;box-shadow:0 4px 20px rgba(13,27,42,0.1)">
+        no_models_hint = """
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:10;pointer-events:none">
+          <div style="background:rgba(255,255,255,.95);border:1px solid #E2E8F0;border-radius:12px;padding:32px 40px;box-shadow:0 4px 20px rgba(13,27,42,.1)">
             <div style="font-size:32px;margin-bottom:12px">📂</div>
-            <div style="font-size:15px;font-weight:600;color:#0D1B2A;margin-bottom:6px">
-              Keine IFC-Modelle vorhanden
-            </div>
-            <div style="font-size:13px;color:#4A5568">
-              Bitte laden Sie zunächst IFC-Dateien im Documents-Modul hoch.
-            </div>
+            <div style="font-size:15px;font-weight:700;color:#0D1B2A;margin-bottom:6px">Keine IFC-Modelle vorhanden</div>
+            <div style="font-size:13px;color:#4A5568">Bitte laden Sie zunächst IFC-Dateien im Documents-Modul hoch.</div>
           </div>
         </div>"""
 
     body = f"""
 {_topbar_global(account)}
-{_project_subnav(project_id, "model")}
-
-<div style="display:flex;flex-direction:column;height:calc(100vh - 94px);overflow:hidden;
-  position:relative;background:#F0F2F5">
+<div class="bp-viewer-shell">
   {error_html}
 
-  <div style="display:flex;flex:1;overflow:hidden">
-
-    <!-- ─── Sidebar ──────────────────────────────────────────────────────── -->
-    <div id="sidebar" style="width:272px;min-width:272px;background:#FFFFFF;
-      border-right:1px solid #E2E8F0;display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0;box-shadow:2px 0 8px rgba(13,27,42,0.04)">
-
-      <div style="padding:10px 14px;font-size:10px;font-weight:700;background:#F8FAFC;
-        color:#64748B;text-transform:uppercase;letter-spacing:.9px;
-        border-bottom:1px solid #E2E8F0;flex-shrink:0;
-        display:flex;align-items:center;justify-content:space-between">
-        <span>📁 IFC-Modelle</span>
-        <button onclick="applyDocSelection()" id="btn-apply-select"
-          style="display:inline;font-size:10px;padding:3px 10px;background:#1E6FBF;
-          border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:600"
-          title="Auswahl übernehmen">
-          ✓ Laden
-        </button>
-      </div>
-
-      <div style="padding:6px 8px;border-bottom:1px solid #E2E8F0;flex-shrink:0;
-        max-height:{'180px' if all_ifc_docs else '60px'};overflow-y:auto">
-        <form id="model-select-form" method="GET" action="/projects/{pid}/view">
-          {select_rows if select_rows else '<div style="padding:8px 4px;font-size:11px;color:#8896A5;font-style:italic">Keine Modelle im Documents-Modul.</div>'}
-        </form>
-        {f'<div style="padding:6px 4px;display:flex;gap:6px"><button type="button" onclick="toggleAllDocs(true)" style="flex:1;font-size:10px;padding:3px 0;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:4px;cursor:pointer;color:#64748B">Alle</button><button type="button" onclick="toggleAllDocs(false)" style="flex:1;font-size:10px;padding:3px 0;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:4px;cursor:pointer;color:#64748B">Keine</button></div>' if all_ifc_docs else ''}
-      </div>
-
-      <div style="padding:8px 14px;font-size:10px;font-weight:700;background:#F8FAFC;
-        color:#64748B;text-transform:uppercase;letter-spacing:.9px;
-        border-bottom:1px solid #E2E8F0;flex-shrink:0;
-        display:flex;align-items:center;justify-content:space-between">
-        <span>🏗 IFC-Struktur</span>
-        <span style="display:flex;gap:8px">
-          <button id="btn-cat-all" style="font-size:10px;cursor:pointer;color:#1E6FBF;
-            background:none;border:none;padding:0;font-weight:600;opacity:0.7"
-            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Alle</button>
-          <button id="btn-cat-none" style="font-size:10px;cursor:pointer;color:#1E6FBF;
-            background:none;border:none;padding:0;font-weight:600;opacity:0.7"
-            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Keine</button>
-        </span>
-      </div>
-
-      <div id="cat-scroll" style="flex:1;overflow-y:auto;padding:4px 0;background:#FAFBFC">
-        <div style="padding:16px;font-size:12px;color:#8896A5;font-style:italic;text-align:center">
-          Wird geladen…
-        </div>
-      </div>
-
-      <div id="load-status" style="padding:6px 14px;font-size:11px;color:#64748B;
-        border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;
-        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-        min-height:28px;display:flex;align-items:center"></div>
+  <div class="bp-viewer-topbar">
+    <a class="bp-back" href="/projects/{pid}" title="Zurück zum Projekt">← {project_name}</a>
+    <nav class="bp-tabs" role="tablist" aria-label="Viewer Navigation">
+      <button type="button" class="bp-tab-btn is-active" data-viewer-tab="navigation" aria-selected="true">Navigation</button>
+      <button type="button" class="bp-tab-btn" data-viewer-tab="conflicts" aria-selected="false">Conflicts</button>
+      <button type="button" class="bp-tab-btn" data-viewer-tab="lists" aria-selected="false">Lists</button>
+      <button type="button" class="bp-tab-btn" data-viewer-tab="issues" aria-selected="false">Issues</button>
+      <button type="button" class="bp-tab-btn" data-viewer-tab="checking" aria-selected="false">Checking</button>
+    </nav>
+    <div class="bp-topbar-tools">
+      <span id="hidden-count"></span>
+      <button id="btn-show-all" type="button" class="bp-tool-btn">👁 Alle</button>
+      <button id="btn-fit" type="button" class="bp-tool-btn">Fit</button>
+      <button id="btn-reset" type="button" class="bp-tool-btn">Camera</button>
     </div>
+  </div>
 
-    <!-- ─── Canvas ──────────────────────────────────────────────────────── -->
-    <div id="canvas-wrap" style="flex:1;position:relative;overflow:hidden;background:#F0F2F5">
+  <div class="bp-main">
+    <aside id="sidebar" class="bp-sidebar">
+      <div class="bp-tab-stack">
+        <section id="tab-navigation" class="bp-tab-panel bp-nav-panel is-active">
+          <div class="bp-section-head">
+            <span>📁 IFC Dateien</span>
+            <button id="btn-apply-select" type="button" class="bp-primary-btn">✓ Laden</button>
+          </div>
+          <div class="bp-doc-list">
+            <form id="model-select-form" method="GET" action="/projects/{pid}/view">
+              {docs_html}
+            </form>
+          </div>
+          <div class="bp-doc-actions">
+            <button type="button" onclick="toggleAllDocs(true)" class="bp-small-btn" style="flex:1">Alle</button>
+            <button type="button" onclick="toggleAllDocs(false)" class="bp-small-btn" style="flex:1">Keine</button>
+          </div>
+          <div class="bp-section-head">
+            <span>🏗 IFC Struktur</span>
+            <span style="display:flex;gap:8px">
+              <button id="btn-cat-all" type="button" class="bp-small-btn">Alle</button>
+              <button id="btn-cat-none" type="button" class="bp-small-btn">Keine</button>
+            </span>
+          </div>
+          <div id="cat-scroll" class="bp-cat-scroll">
+            <div class="bp-empty" style="margin:10px">Wird geladen…</div>
+          </div>
+          <div id="load-status"></div>
+        </section>
+
+        <section id="tab-conflicts" class="bp-tab-panel">
+          <div class="bp-panel-scroll">
+            <div class="bp-section-head" style="margin:-10px -10px 10px">Conflicts</div>
+            <label class="bp-field">Gruppe A<select id="clash-a">{doc_options}</select></label>
+            <label class="bp-field">Gruppe B<select id="clash-b">{doc_options}</select></label>
+            <label class="bp-field">Toleranz (m)<input id="clash-tolerance" type="number" step="0.01" min="0" value="0.01"></label>
+            <button id="btn-clash-run" type="button" class="bp-primary-btn" style="width:100%">Clash starten</button>
+            <div id="clash-results" class="bp-results"></div>
+          </div>
+        </section>
+
+        <section id="tab-lists" class="bp-tab-panel">
+          <div class="bp-panel-scroll">
+            <div class="bp-section-head" style="margin:-10px -10px 10px">Lists</div>
+            <label class="bp-field">Datei<select id="list-doc">{doc_options}</select></label>
+            <label class="bp-field">IFC-Typ<input id="list-type-filter" type="text" placeholder="z.B. IfcWall"></label>
+            <label class="bp-field">Name<input id="list-name-filter" type="text" placeholder="Name enthält …"></label>
+            <button id="btn-list-run" type="button" class="bp-primary-btn" style="width:100%">Laden</button>
+            <div id="list-results" class="bp-results"></div>
+          </div>
+        </section>
+
+        <section id="tab-issues" class="bp-tab-panel">
+          <div class="bp-panel-scroll">
+            <div class="bp-section-head" style="margin:-10px -10px 10px">Issues</div>
+            <div id="issues-results" class="bp-results"><div class="bp-empty">Tab öffnen lädt Issues automatisch.</div></div>
+          </div>
+        </section>
+
+        <section id="tab-checking" class="bp-tab-panel">
+          <div class="bp-panel-scroll">
+            <div class="bp-section-head" style="margin:-10px -10px 10px">Checking</div>
+            <label class="bp-field">Datei<select id="checking-doc">{doc_options}</select></label>
+            <div style="display:flex;gap:6px;margin-bottom:8px">
+              <button id="btn-rules-all" type="button" class="bp-small-btn" style="flex:1">Alle Regeln</button>
+              <button id="btn-rules-none" type="button" class="bp-small-btn" style="flex:1">Keine</button>
+            </div>
+            {rule_rows}
+            <button id="btn-checking-run" type="button" class="bp-primary-btn" style="width:100%;margin-top:4px">Prüfung starten</button>
+            <div id="checking-results" class="bp-results"></div>
+          </div>
+        </section>
+      </div>
+
+      <section id="info-panel" class="bp-info-panel">
+        <div class="bp-info-head">
+          <span id="info-panel-title">Element Info</span>
+          <button id="info-close" type="button" class="bp-info-close" title="Auswahl leeren">✕</button>
+        </div>
+        <div id="info-body" class="bp-info-body">
+          <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>
+        </div>
+      </section>
+    </aside>
+
+    <main id="canvas-wrap" class="bp-canvas-wrap">
       {no_models_hint}
-      <canvas id="three-canvas" style="width:100%!important;height:100%!important;display:block"></canvas>
+      <canvas id="three-canvas"></canvas>
 
       <div id="search-bar" style="position:absolute;top:14px;left:14px;z-index:10;width:310px">
         <div style="display:flex;gap:5px">
           <div style="flex:1;position:relative">
-            <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none"
-              width="13" height="13" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24">
-              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-            </svg>
-            <input id="gid-search" type="text" placeholder="GlobalId suchen…"
-              style="width:100%;background:rgba(255,255,255,0.97);border:1px solid #E2E8F0;
-              color:#0D1B2A;padding:8px 10px 8px 30px;border-radius:9px;font-size:12px;
-              outline:none;box-shadow:0 2px 10px rgba(13,27,42,0.08);font-family:'Inter',system-ui,sans-serif"
-              autocomplete="off">
+            <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none" width="13" height="13" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <input id="gid-search" type="text" placeholder="GlobalId suchen…" style="width:100%;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#0D1B2A;padding:8px 10px 8px 30px;border-radius:9px;font-size:12px;outline:none;box-shadow:0 2px 10px rgba(13,27,42,.08);font-family:'Inter',system-ui,sans-serif" autocomplete="off">
           </div>
-          <button id="search-clear" style="display:none;background:rgba(255,255,255,0.97);
-            border:1px solid #E2E8F0;color:#8896A5;border-radius:9px;
-            padding:7px 11px;cursor:pointer;font-size:12px;
-            box-shadow:0 2px 10px rgba(13,27,42,0.08)">✕</button>
+          <button id="search-clear" style="display:none;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#8896A5;border-radius:9px;padding:7px 11px;cursor:pointer;font-size:12px;box-shadow:0 2px 10px rgba(13,27,42,.08)">✕</button>
         </div>
-        <div id="search-results" style="display:none;margin-top:5px;
-          background:rgba(255,255,255,0.98);border:1px solid #E2E8F0;
-          border-radius:9px;max-height:280px;overflow-y:auto;
-          box-shadow:0 6px 20px rgba(13,27,42,0.12)"></div>
+        <div id="search-results" style="display:none;margin-top:5px;background:rgba(255,255,255,.98);border:1px solid #E2E8F0;border-radius:9px;max-height:280px;overflow-y:auto;box-shadow:0 6px 20px rgba(13,27,42,.12)"></div>
       </div>
 
-      <div style="position:absolute;top:14px;right:14px;display:flex;gap:7px;z-index:6">
-        <button id="btn-fit" style="font-size:12px;padding:7px 13px;background:rgba(255,255,255,0.97);
-          border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;
-          box-shadow:0 2px 8px rgba(13,27,42,0.08);font-family:inherit">⊡ Einpassen</button>
-        <button id="btn-reset" style="font-size:12px;padding:7px 13px;background:rgba(255,255,255,0.97);
-          border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;
-          box-shadow:0 2px 8px rgba(13,27,42,0.08);font-family:inherit">⟳ Kamera</button>
-        <button id="btn-show-all" style="font-size:12px;padding:7px 13px;display:none;
-          background:rgba(254,242,242,0.97);border:1px solid rgba(220,38,38,0.3);
-          border-radius:8px;cursor:pointer;color:#DC2626;
-          box-shadow:0 2px 8px rgba(13,27,42,0.08);font-family:inherit">👁 Alle</button>
-        <span id="hidden-count" style="font-size:11px;color:#DC2626;display:none;
-          align-self:center;background:rgba(254,242,242,0.97);
-          padding:5px 9px;border-radius:7px;border:1px solid rgba(220,38,38,0.2)"></span>
-      </div>
-
-      <div style="position:absolute;bottom:14px;right:14px;font-size:10px;color:#8896A5;
-        background:rgba(255,255,255,0.88);padding:5px 11px;border-radius:7px;
-        border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)">
+      <div style="position:absolute;bottom:14px;right:14px;font-size:10px;color:#8896A5;background:rgba(255,255,255,.88);padding:5px 11px;border-radius:7px;border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)">
         LMB Drehen · MMB Verschieben · Scroll Zoom · Leertaste Ausblenden
       </div>
 
-      <div id="loading" style="position:absolute;inset:0;display:flex;flex-direction:column;
-        align-items:center;justify-content:center;background:rgba(240,242,245,0.96);z-index:20">
-        <div style="width:46px;height:46px;border:3px solid #BFDBFE;
-          border-top-color:#1E6FBF;border-radius:50%;
-          animation:spin .7s linear infinite;margin-bottom:18px"></div>
-        <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0;font-family:inherit">
-          Verbindung zu R2 wird hergestellt…
-        </p>
-        <div id="load-progress" style="margin-top:14px;width:240px;height:3px;
-          background:#E2E8F0;border-radius:2px;overflow:hidden">
-          <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;
-            transition:width .4s ease;border-radius:2px"></div>
+      <div id="loading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(240,242,245,.96);z-index:20">
+        <div style="width:46px;height:46px;border:3px solid #BFDBFE;border-top-color:#1E6FBF;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:18px"></div>
+        <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0;font-family:inherit">Verbindung zu R2 wird hergestellt…</p>
+        <div id="load-progress" style="margin-top:14px;width:240px;height:3px;background:#E2E8F0;border-radius:2px;overflow:hidden">
+          <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;transition:width .4s ease;border-radius:2px"></div>
         </div>
         <p id="load-sub" style="color:#8896A5;font-size:11px;margin:8px 0 0;font-family:inherit"></p>
       </div>
-    </div>
-
-    <!-- ─── Info-Panel ──────────────────────────────────────────────────── -->
-    <div id="info-panel" style="width:320px;min-width:320px;background:#FFFFFF;
-      border-left:1px solid #E2E8F0;display:flex;flex-direction:column;
-      overflow:hidden;flex-shrink:0;box-shadow:-2px 0 8px rgba(13,27,42,0.04)">
-      <div style="padding:10px 14px;font-size:10px;font-weight:700;background:#F8FAFC;
-        color:#64748B;text-transform:uppercase;letter-spacing:.9px;
-        border-bottom:1px solid #E2E8F0;flex-shrink:0;
-        display:flex;align-items:center;justify-content:space-between">
-        <span id="info-panel-title">Element-Info</span>
-        <span id="info-close" style="cursor:pointer;color:#8896A5;font-size:16px;
-          padding:0 4px;line-height:1" title="Schließen">✕</span>
-      </div>
-      <div id="info-body" style="flex:1;overflow-y:auto;padding:14px;font-size:12px">
-        <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">
-          Klicken Sie auf ein Element<br>für Details.
-        </div>
-      </div>
-    </div>
-
+    </main>
   </div>
 </div>
 
+
 <style>
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-#btn-fit:hover, #btn-reset:hover {{
-  background: rgba(255,255,255,1) !important;
-  box-shadow: 0 3px 12px rgba(13,27,42,0.14) !important;
-  transform: translateY(-1px);
-}}
-#cat-scroll::-webkit-scrollbar {{ width: 4px; }}
-#cat-scroll::-webkit-scrollbar-thumb {{ background: #CBD5E1; border-radius: 2px; }}
-#info-body::-webkit-scrollbar {{ width: 4px; }}
-#info-body::-webkit-scrollbar-thumb {{ background: #CBD5E1; border-radius: 2px; }}
+.bp-viewer-shell{{height:calc(100vh - 52px);display:flex;flex-direction:column;overflow:hidden;background:#F0F2F5;color:#0D1B2A;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}}
+.bp-viewer-topbar{{height:46px;min-height:46px;background:#FFFFFF;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;gap:14px;padding:0 14px;box-shadow:0 1px 4px rgba(13,27,42,.04);z-index:12}}
+.bp-back{{font-weight:700;color:#0D1B2A;text-decoration:none;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}}
+.bp-tabs{{display:flex;align-items:center;gap:4px;height:100%;flex:1;min-width:0}}
+.bp-tab-btn{{border:none;background:transparent;color:#64748B;font-size:12px;font-weight:650;padding:8px 10px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap}}
+.bp-tab-btn:hover{{background:#F1F5F9;color:#0D1B2A}}
+.bp-tab-btn.is-active{{background:#EFF6FF;color:#1E40AF}}
+.bp-topbar-tools{{display:flex;align-items:center;gap:8px;flex-shrink:0}}
+.bp-tool-btn{{font-size:12px;padding:7px 12px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;box-shadow:0 1px 4px rgba(13,27,42,.06);font-family:inherit;font-weight:600}}
+.bp-tool-btn:hover{{background:#F8FAFC;transform:translateY(-1px)}}
+#btn-show-all{{display:none;color:#DC2626;background:#FEF2F2;border-color:rgba(220,38,38,.25)}}
+#hidden-count{{font-size:11px;color:#DC2626;display:none;background:#FEF2F2;padding:5px 9px;border-radius:7px;border:1px solid rgba(220,38,38,.2)}}
+.bp-main{{flex:1;min-height:0;display:flex;overflow:hidden}}
+.bp-sidebar{{width:280px;min-width:280px;background:#FFFFFF;border-right:1px solid #E2E8F0;display:flex;flex-direction:column;overflow:hidden;box-shadow:2px 0 8px rgba(13,27,42,.04);z-index:5}}
+.bp-tab-stack{{flex:1;min-height:0;display:flex;overflow:hidden}}
+.bp-tab-panel{{display:none;flex:1;min-height:0;overflow:hidden;flex-direction:column;background:#FFFFFF}}
+.bp-tab-panel.is-active{{display:flex}}
+.bp-panel-scroll{{flex:1;min-height:0;overflow-y:auto;padding:10px;background:#FFFFFF}}
+.bp-nav-panel{{padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden}}
+.bp-section-head{{padding:9px 12px;font-size:10px;font-weight:800;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
+.bp-small-btn{{font-size:10px;padding:4px 9px;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:5px;cursor:pointer;color:#64748B;font-weight:700;font-family:inherit}}
+.bp-primary-btn{{font-size:11px;padding:7px 10px;background:#1E6FBF;border:1px solid #1E6FBF;color:#fff;border-radius:7px;cursor:pointer;font-weight:700;font-family:inherit}}
+.bp-primary-btn:hover{{background:#175A9D}}
+.bp-doc-list{{padding:7px 8px;border-bottom:1px solid #E2E8F0;max-height:168px;overflow-y:auto;flex-shrink:0}}
+.bp-doc-actions{{padding:7px 8px;display:flex;gap:6px;border-bottom:1px solid #E2E8F0;flex-shrink:0}}
+.bp-cat-scroll{{flex:1;min-height:0;overflow-y:auto;padding:4px 0;background:#FAFBFC}}
+#load-status{{padding:7px 12px;font-size:11px;color:#64748B;border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px;display:flex;align-items:center}}
+.bp-field{{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:11px;color:#64748B;font-weight:700}}
+.bp-field select,.bp-field input{{width:100%;box-sizing:border-box;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:7px;padding:8px 9px;font-size:12px;color:#0D1B2A;font-family:inherit;outline:none}}
+.bp-field select:focus,.bp-field input:focus{{border-color:#1E6FBF;box-shadow:0 0 0 2px rgba(30,111,191,.12)}}
+.bp-results{{display:flex;flex-direction:column;gap:8px;margin-top:10px;font-size:12px}}
+.bp-summary{{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:9px 10px;color:#334155;font-size:12px;margin-bottom:8px}}
+.bp-empty{{background:#F8FAFC;border:1px dashed #CBD5E1;border-radius:8px;padding:12px;color:#94A3B8;font-size:12px;text-align:center;line-height:1.5}}
+.bp-error{{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px;color:#991B1B;font-size:12px;line-height:1.45}}
+.bp-result-card,.bp-issue-card{{background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:9px 10px;box-shadow:0 1px 3px rgba(13,27,42,.04);font-size:11px;line-height:1.45;overflow:hidden}}
+.bp-result-error{{border-left:4px solid #DC2626;background:#FEF2F2}}
+.bp-result-warning{{border-left:4px solid #D97706;background:#FFFBEB}}
+.bp-result-info{{border-left:4px solid #1E6FBF;background:#EFF6FF}}
+.bp-card-title{{font-weight:800;color:#0D1B2A;margin-bottom:4px;font-size:12px}}
+.bp-muted{{color:#64748B;font-size:10px;word-break:break-all}}
+.bp-mono{{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;word-break:break-all}}
+.bp-issue-meta{{display:flex;gap:5px;flex-wrap:wrap;color:#64748B;font-size:10px}}
+.bp-issue-meta span{{background:#F1F5F9;border:1px solid #E2E8F0;border-radius:999px;padding:2px 6px}}
+.bp-table-wrap{{max-height:360px;overflow:auto;border:1px solid #E2E8F0;border-radius:8px;background:#FFFFFF}}
+.bp-table{{width:100%;border-collapse:collapse;font-size:11px;min-width:560px}}
+.bp-table th{{position:sticky;top:0;background:#F8FAFC;color:#475569;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #E2E8F0;padding:7px}}
+.bp-table td{{border-bottom:1px solid #F1F5F9;padding:7px;color:#334155;vertical-align:top}}
+.bp-rule-row{{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border:1px solid #E2E8F0;border-radius:7px;margin-bottom:6px;background:#F8FAFC;color:#334155;font-size:11px;font-weight:650;cursor:pointer}}
+.bp-rule-row input{{margin-top:1px;accent-color:#1E6FBF}}
+.bp-info-panel{{max-height:280px;min-height:150px;border-top:1px solid #E2E8F0;background:#FFFFFF;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}}
+.bp-info-head{{padding:9px 12px;font-size:10px;font-weight:800;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
+.bp-info-close{{border:none;background:transparent;color:#94A3B8;cursor:pointer;font-size:14px;line-height:1;padding:0 3px}}
+.bp-info-body{{overflow-y:auto;padding:12px;font-size:12px;min-height:0;flex:1}}
+.bp-canvas-wrap{{flex:1;min-width:0;position:relative;overflow:hidden;background:#F0F2F5}}
+#three-canvas{{width:100%!important;height:100%!important;display:block}}
+#cat-scroll::-webkit-scrollbar,.bp-panel-scroll::-webkit-scrollbar,.bp-info-body::-webkit-scrollbar,.bp-doc-list::-webkit-scrollbar,.bp-table-wrap::-webkit-scrollbar{{width:5px;height:5px}}
+#cat-scroll::-webkit-scrollbar-thumb,.bp-panel-scroll::-webkit-scrollbar-thumb,.bp-info-body::-webkit-scrollbar-thumb,.bp-doc-list::-webkit-scrollbar-thumb,.bp-table-wrap::-webkit-scrollbar-thumb{{background:#CBD5E1;border-radius:3px}}
 </style>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const PROJECT_ID = {json.dumps(project_id)};
-{_direct_viewer_js(model_urls_js)}
+{_viewer_js(model_urls_js, project_id)}
 </script>
 """
-    return _page(f"{project['project_name']} – Direct Viewer", body)
+    return _page(f"{project.get('project_name', 'Projekt')} – Direct Viewer", body)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IFC-Typ colour / category map
+# IFC-Typ colour / category map + Viewer JavaScript
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _direct_viewer_js(model_urls_js: str) -> str:
-    return f"const MODEL_URLS = [{model_urls_js}];\n" + r"""
+def _viewer_js(model_urls_js, project_id) -> str:
+    js = r"""
+const PROJECT_ID = __PROJECT_ID__;
+const MODEL_URLS = [__MODEL_URLS__];
+const VIEWER_STATE_KEY = "bp_viewer_docs_" + PROJECT_ID;
+
+(function syncViewerDocsFromSession(){
+  const url = new URL(window.location.href);
+  const hasDocs = url.searchParams.has("doc_ids");
+  if (!hasDocs) {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(VIEWER_STATE_KEY) || "null");
+      if (saved && Array.isArray(saved) && saved.length > 0) {
+        saved.forEach(id => url.searchParams.append("doc_ids", id));
+        window.location.replace(url.toString());
+      }
+    } catch (_) {}
+    return;
+  }
+  try {
+    const ids = url.searchParams.getAll("doc_ids");
+    if (ids.length > 0) sessionStorage.setItem(VIEWER_STATE_KEY, JSON.stringify(ids));
+    else sessionStorage.removeItem(VIEWER_STATE_KEY);
+  } catch (_) {}
+})();
+
+// ════════════════════════════════════════════════════════════════════════════
+// Topbar tabs + module APIs
+// ════════════════════════════════════════════════════════════════════════════
+let _issuesLoaded = false;
+
+function _el(id){ return document.getElementById(id); }
+function _statusHtml(text){ return `<div class="bp-empty">${esc(text)}</div>`; }
+function _errorHtml(text){ return `<div class="bp-error">⚠ ${esc(text)}</div>`; }
+
+async function _fetchJson(url, options){
+  const resp = await fetch(url, options || {});
+  const raw = await resp.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch (_) { data = {error: raw || `HTTP ${resp.status}`}; }
+  if (!resp.ok || data.error) {
+    const err = new Error(data.error || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+function switchViewerTab(tab){
+  document.querySelectorAll("[data-viewer-tab]").forEach(btn => {
+    const active = btn.dataset.viewerTab === tab;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".bp-tab-panel").forEach(panel => {
+    panel.classList.toggle("is-active", panel.id === `tab-${tab}`);
+  });
+  if (tab === "issues" && !_issuesLoaded) loadIssuesTab();
+}
+
+document.querySelectorAll("[data-viewer-tab]").forEach(btn => {
+  btn.addEventListener("click", () => switchViewerTab(btn.dataset.viewerTab));
+});
+
+function _selectedRules(){
+  return [...document.querySelectorAll("input[name=checking_rule]:checked")].map(i => i.value);
+}
+
+async function runClashTab(){
+  const out = _el("clash-results");
+  const a = _el("clash-a")?.value || "";
+  const b = _el("clash-b")?.value || "";
+  const tolerance = Number(_el("clash-tolerance")?.value || 0);
+  if (!out) return;
+  if (!a || !b) { out.innerHTML = _errorHtml("Bitte Gruppe A und Gruppe B auswählen."); return; }
+  out.innerHTML = _statusHtml("Clash-Analyse läuft …");
+  try {
+    const data = await _fetchJson(`/projects/${encodeURIComponent(PROJECT_ID)}/clash/run`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        tolerance,
+        group_a: {document_id: a, filters: []},
+        group_b: {document_id: b, filters: []}
+      })
+    });
+    const rows = data.clashes || [];
+    let html = `<div class="bp-summary"><strong>${rows.length}</strong> Clash(es) · A: ${esc(data.count_a ?? 0)} · B: ${esc(data.count_b ?? 0)}</div>`;
+    if (!rows.length) html += _statusHtml("Keine Konflikte gefunden.");
+    html += rows.slice(0, 250).map((c, i) => `
+      <div class="bp-result-card bp-result-error">
+        <div class="bp-card-title">#${i + 1} ${esc(c.type_1 || "")} ↔ ${esc(c.type_2 || "")}</div>
+        <div>${esc(c.name_1 || "Ohne Name")} <span class="bp-muted">${esc(c.global_id_1 || "")}</span></div>
+        <div>${esc(c.name_2 || "Ohne Name")} <span class="bp-muted">${esc(c.global_id_2 || "")}</span></div>
+      </div>`).join("");
+    if (rows.length > 250) html += `<div class="bp-empty">Nur die ersten 250 Treffer werden angezeigt.</div>`;
+    out.innerHTML = html;
+  } catch (err) {
+    out.innerHTML = _errorHtml(err.message);
+  }
+}
+
+async function runListTab(){
+  const out = _el("list-results");
+  const docId = _el("list-doc")?.value || "";
+  const typeFilter = (_el("list-type-filter")?.value || "").trim();
+  const nameFilter = (_el("list-name-filter")?.value || "").trim();
+  if (!out) return;
+  if (!docId) { out.innerHTML = _errorHtml("Bitte eine IFC-Datei auswählen."); return; }
+  const filters = [];
+  if (typeFilter) filters.push({field: "type", operator: "contains", value: typeFilter});
+  if (nameFilter) filters.push({field: "name", operator: "contains", value: nameFilter});
+  out.innerHTML = _statusHtml("Elementliste wird geladen …");
+  try {
+    const data = await _fetchJson(`/projects/${encodeURIComponent(PROJECT_ID)}/list/run`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        document_ids: [docId],
+        filters,
+        columns: ["type", "name", "global_id"],
+        include_psets: false
+      })
+    });
+    const rows = data.rows || [];
+    let html = `<div class="bp-summary"><strong>${esc(data.total ?? rows.length)}</strong> Elemente</div>`;
+    if (!rows.length) html += _statusHtml("Keine Elemente gefunden.");
+    else html += `<div class="bp-table-wrap"><table class="bp-table"><thead><tr><th>type</th><th>name</th><th>global_id</th></tr></thead><tbody>` +
+      rows.slice(0, 500).map(r => `<tr><td>${esc(r.type || "")}</td><td>${esc(r.name || "")}</td><td class="bp-mono">${esc(r.global_id || "")}</td></tr>`).join("") +
+      `</tbody></table></div>`;
+    if (rows.length > 500) html += `<div class="bp-empty">Nur die ersten 500 Zeilen werden angezeigt.</div>`;
+    out.innerHTML = html;
+  } catch (err) {
+    out.innerHTML = _errorHtml(err.message);
+  }
+}
+
+async function loadIssuesTab(){
+  const out = _el("issues-results");
+  if (!out) return;
+  _issuesLoaded = true;
+  out.innerHTML = _statusHtml("Issues werden geladen …");
+  try {
+    const data = await _fetchJson(`/projects/${encodeURIComponent(PROJECT_ID)}/issues/data`);
+    const issues = data.issues || [];
+    if (!issues.length) { out.innerHTML = _statusHtml("Keine Issues vorhanden."); return; }
+    out.innerHTML = issues.map(i => `
+      <div class="bp-issue-card">
+        <div class="bp-card-title">${esc(i.title || "Ohne Titel")}</div>
+        <div class="bp-issue-meta">
+          <span>${esc(i.status || "")}</span>
+          <span>${esc(i.issue_type || "")}</span>
+          <span>${esc(i.created_at || "")}</span>
+        </div>
+      </div>`).join("");
+  } catch (err) {
+    _issuesLoaded = false;
+    out.innerHTML = _errorHtml(err.message);
+  }
+}
+
+async function runCheckingTab(){
+  const out = _el("checking-results");
+  const docId = _el("checking-doc")?.value || "";
+  const rules = _selectedRules();
+  if (!out) return;
+  if (!docId) { out.innerHTML = _errorHtml("Bitte eine IFC-Datei auswählen."); return; }
+  if (!rules.length) { out.innerHTML = _errorHtml("Bitte mindestens eine Regel auswählen."); return; }
+  out.innerHTML = _statusHtml("Prüfung läuft …");
+  const bodyByDoc = {document_id: docId, rules};
+  try {
+    let data;
+    try {
+      data = await _fetchJson(`/projects/${encodeURIComponent(PROJECT_ID)}/checking/run-by-doc`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(bodyByDoc)
+      });
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      data = await _fetchJson(`/projects/${encodeURIComponent(PROJECT_ID)}/checking/run`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({document_ids: [docId], rules})
+      });
+    }
+    const summary = data.summary || {};
+    const results = data.results || [];
+    let html = `<div class="bp-summary"><strong>${esc(summary.total ?? results.length)}</strong> Treffer · Errors: ${esc(summary.errors ?? 0)} · Warnings: ${esc(summary.warnings ?? 0)} · Infos: ${esc(summary.infos ?? 0)}</div>`;
+    if (!results.length) html += _statusHtml("Keine Regelverletzungen gefunden.");
+    html += results.slice(0, 300).map(r => {
+      const sev = String(r.severity || "info").toLowerCase();
+      const cls = sev === "error" ? "bp-result-error" : (sev === "warning" ? "bp-result-warning" : "bp-result-info");
+      return `<div class="bp-result-card ${cls}">
+        <div class="bp-card-title">${esc(r.rule_id || "Regel")} · ${esc(sev)}</div>
+        <div>${esc(r.ifc_type || "")} ${esc(r.name || "")}</div>
+        <div class="bp-muted">${esc(r.message || "")}</div>
+      </div>`;
+    }).join("");
+    if (results.length > 300) html += `<div class="bp-empty">Nur die ersten 300 Treffer werden angezeigt.</div>`;
+    out.innerHTML = html;
+  } catch (err) {
+    out.innerHTML = _errorHtml(err.message);
+  }
+}
+
+document.getElementById("btn-clash-run")?.addEventListener("click", runClashTab);
+document.getElementById("btn-list-run")?.addEventListener("click", runListTab);
+document.getElementById("btn-checking-run")?.addEventListener("click", runCheckingTab);
+document.getElementById("btn-rules-all")?.addEventListener("click", () => document.querySelectorAll("input[name=checking_rule]").forEach(i => i.checked = true));
+document.getElementById("btn-rules-none")?.addEventListener("click", () => document.querySelectorAll("input[name=checking_rule]").forEach(i => i.checked = false));
+
+
 // ════════════════════════════════════════════════════════════════════════════
 // IFC-Typ → Farbe & Symbol
 // ════════════════════════════════════════════════════════════════════════════
@@ -967,8 +1224,8 @@ function setCatAll(v){
   for(const docId of Object.keys(structureTree)){ modelVisible[modelKey(docId)]=v; for(const entity of Object.keys(modelEntities(docId))){ entityVisible[entityKey(docId,entity)]=v; for(const t of entityTypeNames(docId,entity)) typeVisible[typeKey(docId,entity,t)]=v; } }
   buildCategoryUI(); applyVisibility();
 }
-document.getElementById("btn-cat-all").addEventListener("click",()=>setCatAll(true));
-document.getElementById("btn-cat-none").addEventListener("click",()=>setCatAll(false));
+document.getElementById("btn-cat-all")?.addEventListener("click",()=>setCatAll(true));
+document.getElementById("btn-cat-none")?.addEventListener("click",()=>setCatAll(false));
 
 // ════════════════════════════════════════════════════════════════════════════
 // web-ifc + model loader
@@ -1306,7 +1563,7 @@ canvas.addEventListener("mouseup",e=>{
     if(!m.userData._origColor)m.userData._origColor=m.material.color.clone();
     m.material.color.copy(HIGHLIGHT); selectedMesh=m;
     showInfo(m);
-    const panel=document.getElementById("info-panel"); panel.style.width="320px"; panel.style.minWidth="320px";
+    const panel=document.getElementById("info-panel"); if(panel)panel.style.display="flex";
   } else {
     if(selectedMesh){selectedMesh.material.color.copy(selectedMesh.userData._origColor);selectedMesh=null;}
     infoBody.innerHTML='<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>';
@@ -1317,7 +1574,7 @@ function selectMesh(m){
   if(selectedMesh&&selectedMesh!==m)selectedMesh.material.color.copy(selectedMesh.userData._origColor);
   if(!m.userData._origColor)m.userData._origColor=m.material.color.clone();
   m.material.color.copy(HIGHLIGHT); selectedMesh=m; showInfo(m);
-  const panel=document.getElementById("info-panel"); panel.style.width="320px"; panel.style.minWidth="320px";
+  const panel=document.getElementById("info-panel"); if(panel)panel.style.display="flex";
 }
 
 window.addEventListener("keydown",e=>{
@@ -1328,10 +1585,10 @@ window.addEventListener("keydown",e=>{
   updateHiddenCount();
 });
 
-document.getElementById("btn-fit").addEventListener("click", fitAll);
-document.getElementById("btn-reset").addEventListener("click",()=>{ orb.tgt.set(0,0,0); orb.sph.set(80,Math.PI/4,Math.PI/4); applyOrb(); });
-document.getElementById("btn-show-all").addEventListener("click",()=>{ hiddenIds.clear(); applyVisibility(); });
-document.getElementById("info-close").addEventListener("click",()=>{ const p=document.getElementById("info-panel"); p.style.width="0"; p.style.minWidth="0"; });
+document.getElementById("btn-fit")?.addEventListener("click", fitAll);
+document.getElementById("btn-reset")?.addEventListener("click",()=>{ orb.tgt.set(0,0,0); orb.sph.set(80,Math.PI/4,Math.PI/4); applyOrb(); });
+document.getElementById("btn-show-all")?.addEventListener("click",()=>{ hiddenIds.clear(); applyVisibility(); });
+document.getElementById("info-close")?.addEventListener("click",()=>{ if(selectedMesh&&selectedMesh.userData._origColor){ selectedMesh.material.color.copy(selectedMesh.userData._origColor); selectedMesh=null; } infoBody.innerHTML='<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>'; });
 
 // ════════════════════════════════════════════════════════════════════════════
 // Model-Sidebar selection
@@ -1342,17 +1599,25 @@ function onDocToggle(docId,checked){
   lbl.style.borderColor=checked?"rgba(30,111,191,0.2)":"transparent";
   const dot=lbl.querySelector("span:last-child"); if(dot)dot.style.opacity=checked?"1":"0.3";
 }
-function applyDocSelection(){
+function _saveViewerDocState(ids){
+  try{
+    if(ids.length>0) sessionStorage.setItem(VIEWER_STATE_KEY,JSON.stringify(ids));
+    else sessionStorage.removeItem(VIEWER_STATE_KEY);
+  }catch(_){}
+}
+function applyNavSelection(){
   const form=document.getElementById("model-select-form"); if(!form)return;
   const checked=[...form.querySelectorAll("input[name=doc_ids]:checked")].map(i=>i.value);
+  _saveViewerDocState(checked);
   const url=new URL(window.location.href); url.searchParams.delete("doc_ids");
   checked.forEach(id=>url.searchParams.append("doc_ids",id)); window.location.href=url.toString();
 }
+function applyDocSelection(){ applyNavSelection(); }
 function toggleAllDocs(v){
   const form=document.getElementById("model-select-form"); if(!form)return;
   form.querySelectorAll("input[name=doc_ids]").forEach(c=>{c.checked=v; onDocToggle(c.value,v);});
 }
-document.getElementById("btn-apply-select")?.addEventListener("click",applyDocSelection);
+document.getElementById("btn-apply-select")?.addEventListener("click",applyNavSelection);
 
 // ════════════════════════════════════════════════════════════════════════════
 // GlobalId search
@@ -1389,69 +1654,8 @@ function esc(s){ return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
   finally{ if(loadEl)loadEl.style.display="none"; }
 })();
 
-// ════════════════════════════════════════════════════════════════════════════
-// VIEWER SESSION STORAGE STATE
-// هدف: حفظ انتخاب doc_ids وقتی کاربر به ماژول دیگری می‌رود و برمی‌گردد
-//
-// چه چیزی ذخیره می‌شود؟
-//   فقط آرایه‌ای از document_id ها در sessionStorage مرورگر
-//   مثال: ["abc123", "def456"]
-//
-// چه چیزی ذخیره نمی‌شود؟
-//   فایل‌های IFC — آن‌ها همیشه دوباره از R2 لود می‌شوند
-//
-// جریان کار:
-//   1. کاربر فایل‌ها را انتخاب می‌کند → URL شامل doc_ids می‌شود
-//   2. JS این doc_ids را در sessionStorage ذخیره می‌کند
-//   3. کاربر به Clash/List/... می‌رود
-//   4. کاربر به viewer برمی‌گردد → URL بدون doc_ids است
-//   5. JS از sessionStorage می‌خواند → redirect به URL با doc_ids
-//   6. فایل‌ها از R2 لود می‌شوند (دوباره، مثل همیشه)
-// ════════════════════════════════════════════════════════════════════════════
-
-(function () {
-  const VIEWER_STATE_KEY = "bp_viewer_docs_" + PROJECT_ID;
-  const url = new URL(window.location.href);
-  const hasDocs = url.searchParams.has("doc_ids");
-
-  if (!hasDocs) {
-    // URL خالی است — بررسی sessionStorage
-    try {
-      const saved = JSON.parse(sessionStorage.getItem(VIEWER_STATE_KEY) || "null");
-      if (saved && Array.isArray(saved) && saved.length > 0) {
-        // doc_ids قبلی پیدا شد → redirect با همان انتخاب
-        saved.forEach(id => url.searchParams.append("doc_ids", id));
-        window.location.replace(url.toString());
-        return;
-      }
-    } catch (_) {}
-    // sessionStorage خالی است → viewer بدون مدل (رفتار معمولی)
-  } else {
-    // URL شامل doc_ids است → ذخیره در sessionStorage
-    try {
-      const ids = url.searchParams.getAll("doc_ids");
-      sessionStorage.setItem(VIEWER_STATE_KEY, JSON.stringify(ids));
-    } catch (_) {}
-  }
-
-  // applyDocSelection را wrap کن تا هنگام تغییر انتخاب، sessionStorage آپدیت شود
-  const _origApply = window.applyDocSelection;
-  window.applyDocSelection = function () {
-    const form = document.getElementById("model-select-form");
-    if (form) {
-      const ids = [...form.querySelectorAll("input[name=doc_ids]:checked")]
-        .map(i => i.value);
-      try {
-        if (ids.length > 0) {
-          sessionStorage.setItem(VIEWER_STATE_KEY, JSON.stringify(ids));
-        } else {
-          // کاربر همه را deselect کرده → پاک کردن storage
-          sessionStorage.removeItem(VIEWER_STATE_KEY);
-        }
-      } catch (_) {}
-    }
-    _origApply();
-  };
-
-})();
 """
+    return (
+        js.replace("__MODEL_URLS__", model_urls_js)
+          .replace("__PROJECT_ID__", json.dumps(str(project_id)))
+    )
