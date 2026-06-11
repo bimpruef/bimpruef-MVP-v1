@@ -17,7 +17,7 @@ Routen:
 import html
 from urllib.parse import quote_plus
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.auth import (
     AUTH_COOKIE_NAME,
@@ -155,16 +155,16 @@ def _topbar_global(account: dict) -> str:
 def _project_subnav(project_id: str, active: str) -> str:
     """
     Subnav für Projektseiten.
-    "model" und "view" sind zu einem einzigen "3D Viewer"-Tab zusammengeführt.
-    Beide Werte setzen den Tab als aktiv.
+
+    Der alte Model-Viewer ist entfernt.
+    "model" und "view" zeigen beide auf den Direct Viewer.
     """
     pid = _e(project_id)
-    # Normalisierung: "view" und "model" → beide markieren den "model"-Tab als aktiv
-    effective_active = "model" if active in ("model", "view") else active
+    effective_active = "view" if active in ("model", "view") else active
 
     items = [
         ("dashboard", f"/projects/{pid}",          "Dashboard"),
-        ("model",     f"/projects/{pid}/view",      "3D Viewer"),
+        ("view",      f"/projects/{pid}/view",      "3D Viewer"),
         ("documents", f"/projects/{pid}/documents", "Documents"),
         ("clash",     f"/projects/{pid}/clash",     "Clash"),
         ("list",      f"/projects/{pid}/list",      "List"),
@@ -172,17 +172,18 @@ def _project_subnav(project_id: str, active: str) -> str:
         ("checking",  f"/projects/{pid}/checking",  "Checking"),
         ("settings",  f"/projects/{pid}/settings",  "Settings"),
     ]
+
     links = []
     for key, href, label in items:
         cls = "bp-tab bp-tab--active" if key == effective_active else "bp-tab"
         links.append(f'<a href="{href}" class="{cls}">{label}</a>')
+
     return (
         '<div class="bp-container">'
         '<div class="bp-tabs" style="margin-top:16px;margin-bottom:0">'
         + "".join(links) +
         '</div></div>'
     )
-
 
 def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html>
@@ -379,7 +380,7 @@ def account_settings(request: Request, saved: str = "", error: str = ""):
 
         '<div class="card" style="border-color:var(--accent2)">'
         '<h2 style="font-size:16px;margin-bottom:8px;color:#ffb3b3">Account vollständig löschen</h2>'
-        '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">Dabei werden der Account, alle Projekte, alle Projekt-Sessions und die dazugehörigen IFC-Dateien aus PostgreSQL, lokalem Cache und Cloudflare R2 gelöscht.</p>'
+        '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">Dabei werden der Account, alle Projekte und alle Projektdokumente aus PostgreSQL und Cloudflare R2 gelöscht.</p>'
         '<form method="POST" action="/account/delete" onsubmit="return confirm(\'Account wirklich endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.\')">'
         '<label>Passwort erneut eingeben</label>'
         '<input type="password" name="current_password" required autocomplete="current-password">'
@@ -1001,6 +1002,34 @@ def project_issues(request: Request, project_id: str, saved: str = "", error: st
     return _page(f"{project['project_name']} – Issues", body)
 
 
+@projects_router.get("/projects/{project_id}/issues/data")
+def project_issues_data(request: Request, project_id: str):
+    account = _account_from_request(request)
+    account_id = account["account_id"]
+
+    project = get_project(account_id, project_id)
+    if not project:
+        return JSONResponse(
+            {"error": "Projekt nicht gefunden."},
+            status_code=404,
+        )
+
+    from app.issue_storage import list_project_issues
+    issues = list_project_issues(account_id, project_id)
+
+    return JSONResponse({
+        "issues": [
+            {
+                "title": issue.get("title", ""),
+                "status": issue.get("status", ""),
+                "issue_type": issue.get("issue_type", ""),
+                "created_at": str(issue.get("created_at", "")),
+            }
+            for issue in issues
+        ]
+    })
+
+
 @projects_router.get("/projects/{project_id}/issues/bcf")
 def project_issues_bcf(request: Request, project_id: str):
     account = _account_from_request(request)
@@ -1115,9 +1144,9 @@ def project_settings(
         '<div class="card" style="border-color:var(--accent2)">'
         '<h2 style="font-size:16px;margin-bottom:8px;color:#ffb3b3">Projekt vollständig löschen</h2>'
         '<p style="color:var(--muted);font-size:12px;margin-bottom:12px">'
-        'Dabei wird das Projekt endgültig gelöscht. Alle zugehörigen IFC-Dateien, '
-        'Metadaten, lokalen Session-Dateien, Clash-Caches und Cloudflare-R2-Dateien '
-        'werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden.'
+        'Dabei wird das Projekt endgültig gelöscht. Alle zugehörigen Projektdokumente, '
+        'Metadaten, Issues und Cloudflare-R2-Dateien werden entfernt. '
+        'Diese Aktion kann nicht rückgängig gemacht werden.'
         '</p>'
         f'<form method="POST" action="/projects/{pid}/delete" '
         'onsubmit="return confirm(\'Projekt wirklich endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.\')">'
