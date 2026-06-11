@@ -259,14 +259,12 @@ def compare_element_groups_for_clashes(
                     "express_id_1":  str(data_a.get("express_id", "")),
                     "file_label_1":  data_a.get("file_label", ""),
                     "document_id_1": doc_a,
-                    "slot_1":        0,
                     "type_2":        data_b.get("type", ""),
                     "name_2":        data_b.get("name", ""),
                     "global_id_2":   gid_b,
                     "express_id_2":  str(data_b.get("express_id", "")),
                     "file_label_2":  data_b.get("file_label", ""),
                     "document_id_2": doc_b,
-                    "slot_2":        0,
                 })
 
     return clashes
@@ -1005,8 +1003,6 @@ async def project_clash_save_issues(request: Request, project_id: str):
 def project_clash_detail(
     request: Request,
     project_id: str,
-    slot_a: int = Query(default=0),
-    slot_b: int = Query(default=0),
     gid1: str = Query(default=""),
     gid2: str = Query(default=""),
 ):
