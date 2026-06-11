@@ -504,7 +504,7 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
         for rule_id, label in rules
     )
 
-    error_html = f'<div class="bp-error" style="position:absolute;top:54px;left:292px;right:14px;z-index:30">{_e(error)}</div>' if error else ""
+    error_html = f'<div class="bp-error bp-viewer-error">{_e(error)}</div>' if error else ""
 
     no_models_hint = ""
     if not all_ifc_docs:
@@ -521,173 +521,190 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 {_topbar_global(account)}
 <div class="bp-viewer-shell">
   {error_html}
+  <main id="canvas-wrap" class="bp-canvas-wrap">
+    {no_models_hint}
+    <canvas id="three-canvas"></canvas>
 
-  <div class="bp-viewer-topbar">
-    <a class="bp-back" href="/projects/{pid}" title="Zurück zum Projekt">← {project_name}</a>
-
-    <div id="model-dropdown" class="bp-model-dropdown">
-      <button id="model-dropdown-btn" type="button" class="bp-model-dropdown-btn" aria-expanded="false" aria-controls="model-dropdown-menu">
-        <span class="bp-model-dropdown-title">IFC Modelle</span>
-        <strong id="model-count-label">{selected_count} / {total_ifc_count}</strong>
-        <span class="bp-chevron">▾</span>
-      </button>
-      <div id="model-dropdown-menu" class="bp-model-dropdown-menu" role="dialog" aria-label="IFC Modelle auswählen">
-        <div class="bp-model-menu-head">
-          <span>Modelle</span>
-          <small>Tick setzen = laden · Tick entfernen = unload</small>
+    <div id="search-bar" class="bp-search-bar">
+      <div style="display:flex;gap:5px">
+        <div style="flex:1;position:relative">
+          <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none" width="13" height="13" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input id="gid-search" type="text" placeholder="GlobalId suchen…" class="bp-search-input" autocomplete="off">
         </div>
-        <form id="model-select-form" method="GET" action="/projects/{pid}/view">
+        <button id="search-clear" class="bp-search-clear" type="button">✕</button>
+      </div>
+      <div id="search-results" class="bp-search-results"></div>
+    </div>
+
+    <nav class="bp-panel-rail" aria-label="Viewer Fenster">
+      <button id="btn-open-info" type="button" class="bp-rail-btn bp-rail-btn--primary" data-open-panel="info-panel">Element Info</button>
+      <button id="btn-open-models" type="button" class="bp-rail-btn" data-open-panel="panel-models">IFC Modelle <span id="model-count-label">{selected_count} / {total_ifc_count}</span></button>
+      <button id="btn-open-structure" type="button" class="bp-rail-btn" data-open-panel="tab-navigation">IFC Struktur</button>
+      <button id="btn-open-conflicts" type="button" class="bp-rail-btn" data-open-panel="tab-conflicts">Conflicts</button>
+      <button id="btn-open-lists" type="button" class="bp-rail-btn" data-open-panel="tab-lists">Lists</button>
+      <button id="btn-open-issues" type="button" class="bp-rail-btn" data-open-panel="tab-issues">Issues</button>
+      <button id="btn-open-checking" type="button" class="bp-rail-btn" data-open-panel="tab-checking">Checking</button>
+      <span id="hidden-count" class="bp-hidden-count"></span>
+      <button id="btn-show-all" type="button" class="bp-rail-btn bp-rail-btn--danger">Einblenden</button>
+      <button id="btn-fit" type="button" class="bp-rail-btn">Fit</button>
+      <button id="btn-reset" type="button" class="bp-rail-btn">Camera</button>
+    </nav>
+
+    <section id="info-panel" class="bp-float-panel bp-info-panel" style="top:14px;right:126px;width:360px;height:560px" aria-label="Element Info">
+      <div id="info-drag-handle" class="bp-float-head">
+        <span id="info-panel-title">Element Info</span>
+        <button id="info-close" type="button" class="bp-float-close" data-close-panel="info-panel" title="Fenster schließen">✕</button>
+      </div>
+      <div id="info-body" class="bp-float-body bp-info-body">
+        <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>
+      </div>
+    </section>
+
+    <section id="panel-models" class="bp-float-panel is-closed" style="top:74px;right:126px;width:370px;height:430px" aria-label="IFC Modelle">
+      <div id="models-drag-handle" class="bp-float-head">
+        <span>IFC Modelle</span>
+        <button type="button" class="bp-float-close" data-close-panel="panel-models" title="Fenster schließen">✕</button>
+      </div>
+      <div class="bp-float-body">
+        <div class="bp-panel-note">Tick setzen = laden · Tick entfernen = unload. Die Auswahl wird in der URL und Session gespeichert.</div>
+        <form id="model-select-form" method="GET" action="/projects/{pid}/view" class="bp-model-list">
           {docs_html}
         </form>
       </div>
+    </section>
+
+    <section id="tab-navigation" class="bp-float-panel is-closed bp-nav-panel" style="top:134px;right:126px;width:330px;height:620px" aria-label="IFC Struktur">
+      <div id="nav-drag-handle" class="bp-float-head">
+        <span>IFC Struktur</span>
+        <div class="bp-float-head-actions">
+          <button id="btn-cat-all" type="button" class="bp-mini-btn">Alle</button>
+          <button id="btn-cat-none" type="button" class="bp-mini-btn">Keine</button>
+          <button type="button" class="bp-float-close" data-close-panel="tab-navigation" title="Fenster schließen">✕</button>
+        </div>
+      </div>
+      <div id="cat-scroll" class="bp-cat-scroll">
+        <div class="bp-empty" style="margin:10px">Wird geladen…</div>
+      </div>
+      <div id="load-status"></div>
+    </section>
+
+    <section id="tab-conflicts" class="bp-float-panel is-closed" style="top:194px;right:126px;width:390px;height:530px" aria-label="Conflicts">
+      <div id="conflicts-drag-handle" class="bp-float-head">
+        <span>Conflicts</span>
+        <div class="bp-float-head-actions">
+          <a class="bp-module-link" href="/projects/{pid}/clash">Modul öffnen ↗</a>
+          <button type="button" class="bp-float-close" data-close-panel="tab-conflicts" title="Fenster schließen">✕</button>
+        </div>
+      </div>
+      <div class="bp-float-body bp-panel-scroll">
+        <div class="bp-panel-note">Clash-Analyse aus dem Clash-Modul</div>
+        <label class="bp-field">Gruppe A<select id="clash-a">{doc_options}</select></label>
+        <label class="bp-field">Gruppe B<select id="clash-b">{doc_options}</select></label>
+        <label class="bp-field">Toleranz (m)<input id="clash-tolerance" type="number" step="0.01" min="0" value="0.01"></label>
+        <button id="btn-clash-run" type="button" class="bp-primary-btn" style="width:100%">Clash starten</button>
+        <div id="clash-results" class="bp-results"></div>
+      </div>
+    </section>
+
+    <section id="tab-lists" class="bp-float-panel is-closed" style="top:254px;right:126px;width:410px;height:540px" aria-label="Lists">
+      <div id="lists-drag-handle" class="bp-float-head">
+        <span>Lists</span>
+        <div class="bp-float-head-actions">
+          <a class="bp-module-link" href="/projects/{pid}/list">Modul öffnen ↗</a>
+          <button type="button" class="bp-float-close" data-close-panel="tab-lists" title="Fenster schließen">✕</button>
+        </div>
+      </div>
+      <div class="bp-float-body bp-panel-scroll">
+        <div class="bp-panel-note">Elementlisten aus dem List-Modul</div>
+        <label class="bp-field">Datei<select id="list-doc">{doc_options}</select></label>
+        <label class="bp-field">IFC-Typ<input id="list-type-filter" type="text" placeholder="z.B. IfcWall"></label>
+        <label class="bp-field">Name<input id="list-name-filter" type="text" placeholder="Name enthält …"></label>
+        <button id="btn-list-run" type="button" class="bp-primary-btn" style="width:100%">Laden</button>
+        <div id="list-results" class="bp-results"></div>
+      </div>
+    </section>
+
+    <section id="tab-issues" class="bp-float-panel is-closed" style="top:314px;right:126px;width:380px;height:500px" aria-label="Issues">
+      <div id="issues-drag-handle" class="bp-float-head">
+        <span>Issues</span>
+        <div class="bp-float-head-actions">
+          <a class="bp-module-link" href="/projects/{pid}/issues">Modul öffnen ↗</a>
+          <button type="button" class="bp-float-close" data-close-panel="tab-issues" title="Fenster schließen">✕</button>
+        </div>
+      </div>
+      <div class="bp-float-body bp-panel-scroll">
+        <div class="bp-panel-note">Issue-Liste aus dem Issues-Modul</div>
+        <div id="issues-results" class="bp-results"><div class="bp-empty">Fenster öffnen lädt Issues automatisch.</div></div>
+      </div>
+    </section>
+
+    <section id="tab-checking" class="bp-float-panel is-closed" style="top:374px;right:126px;width:390px;height:560px" aria-label="Checking">
+      <div id="checking-drag-handle" class="bp-float-head">
+        <span>Checking</span>
+        <div class="bp-float-head-actions">
+          <a class="bp-module-link" href="/projects/{pid}/checking">Modul öffnen ↗</a>
+          <button type="button" class="bp-float-close" data-close-panel="tab-checking" title="Fenster schließen">✕</button>
+        </div>
+      </div>
+      <div class="bp-float-body bp-panel-scroll">
+        <div class="bp-panel-note">Regelprüfung aus dem Checking-Modul</div>
+        <label class="bp-field">Datei<select id="checking-doc">{doc_options}</select></label>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button id="btn-rules-all" type="button" class="bp-mini-btn" style="flex:1">Alle Regeln</button>
+          <button id="btn-rules-none" type="button" class="bp-mini-btn" style="flex:1">Keine</button>
+        </div>
+        {rule_rows}
+        <button id="btn-checking-run" type="button" class="bp-primary-btn" style="width:100%;margin-top:4px">Prüfung starten</button>
+        <div id="checking-results" class="bp-results"></div>
+      </div>
+    </section>
+
+    <div class="bp-help-hint">
+      LMB Drehen · MMB Verschieben · Scroll Zoom · Leertaste Ausblenden · Doppelklick öffnet Element Info
     </div>
 
-    <nav class="bp-tabs" role="tablist" aria-label="Viewer Navigation">
-      <button type="button" class="bp-tab-btn is-active" data-viewer-tab="navigation" aria-selected="true">IFC Struktur</button>
-      <button type="button" class="bp-tab-btn" data-viewer-tab="conflicts" aria-selected="false">Conflicts</button>
-      <button type="button" class="bp-tab-btn" data-viewer-tab="lists" aria-selected="false">Lists</button>
-      <button type="button" class="bp-tab-btn" data-viewer-tab="issues" aria-selected="false">Issues</button>
-      <button type="button" class="bp-tab-btn" data-viewer-tab="checking" aria-selected="false">Checking</button>
-    </nav>
-    <div class="bp-topbar-tools">
-      <span id="hidden-count"></span>
-      <button id="btn-show-all" type="button" class="bp-tool-btn">👁 Einblenden</button>
-      <button id="btn-fit" type="button" class="bp-tool-btn">Fit</button>
-      <button id="btn-reset" type="button" class="bp-tool-btn">Camera</button>
+    <div id="loading" class="bp-loading">
+      <div class="bp-spinner"></div>
+      <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0;font-family:inherit">Verbindung zu R2 wird hergestellt…</p>
+      <div id="load-progress" style="margin-top:14px;width:240px;height:3px;background:#E2E8F0;border-radius:2px;overflow:hidden">
+        <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;transition:width .4s ease;border-radius:2px"></div>
+      </div>
+      <p id="load-sub" style="color:#8896A5;font-size:11px;margin:8px 0 0;font-family:inherit"></p>
     </div>
-  </div>
-
-  <div class="bp-main">
-    <aside id="sidebar" class="bp-sidebar">
-      <div class="bp-tab-stack">
-        <section id="tab-navigation" class="bp-tab-panel bp-nav-panel is-active">
-          <div class="bp-section-head">
-            <span>🏗 IFC Struktur</span>
-            <small>kompakt</small>
-          </div>
-          <div id="cat-scroll" class="bp-cat-scroll">
-            <div class="bp-empty" style="margin:10px">Wird geladen…</div>
-          </div>
-          <div id="load-status"></div>
-        </section>
-
-        <section id="tab-conflicts" class="bp-tab-panel">
-          <div class="bp-panel-scroll">
-            <div class="bp-module-head">
-              <div><strong>Conflicts</strong><small>Clash-Analyse aus dem Clash-Modul</small></div>
-              <a class="bp-module-link" href="/projects/{pid}/clash">Modul öffnen ↗</a>
-            </div>
-            <label class="bp-field">Gruppe A<select id="clash-a">{doc_options}</select></label>
-            <label class="bp-field">Gruppe B<select id="clash-b">{doc_options}</select></label>
-            <label class="bp-field">Toleranz (m)<input id="clash-tolerance" type="number" step="0.01" min="0" value="0.01"></label>
-            <button id="btn-clash-run" type="button" class="bp-primary-btn" style="width:100%">Clash starten</button>
-            <div id="clash-results" class="bp-results"></div>
-          </div>
-        </section>
-
-        <section id="tab-lists" class="bp-tab-panel">
-          <div class="bp-panel-scroll">
-            <div class="bp-module-head">
-              <div><strong>Lists</strong><small>Elementlisten aus dem List-Modul</small></div>
-              <a class="bp-module-link" href="/projects/{pid}/list">Modul öffnen ↗</a>
-            </div>
-            <label class="bp-field">Datei<select id="list-doc">{doc_options}</select></label>
-            <label class="bp-field">IFC-Typ<input id="list-type-filter" type="text" placeholder="z.B. IfcWall"></label>
-            <label class="bp-field">Name<input id="list-name-filter" type="text" placeholder="Name enthält …"></label>
-            <button id="btn-list-run" type="button" class="bp-primary-btn" style="width:100%">Laden</button>
-            <div id="list-results" class="bp-results"></div>
-          </div>
-        </section>
-
-        <section id="tab-issues" class="bp-tab-panel">
-          <div class="bp-panel-scroll">
-            <div class="bp-module-head">
-              <div><strong>Issues</strong><small>Issue-Liste aus dem Issues-Modul</small></div>
-              <a class="bp-module-link" href="/projects/{pid}/issues">Modul öffnen ↗</a>
-            </div>
-            <div id="issues-results" class="bp-results"><div class="bp-empty">Tab öffnen lädt Issues automatisch.</div></div>
-          </div>
-        </section>
-
-        <section id="tab-checking" class="bp-tab-panel">
-          <div class="bp-panel-scroll">
-            <div class="bp-module-head">
-              <div><strong>Checking</strong><small>Regelprüfung aus dem Checking-Modul</small></div>
-              <a class="bp-module-link" href="/projects/{pid}/checking">Modul öffnen ↗</a>
-            </div>
-            <label class="bp-field">Datei<select id="checking-doc">{doc_options}</select></label>
-            <div style="display:flex;gap:6px;margin-bottom:8px">
-              <button id="btn-rules-all" type="button" class="bp-small-btn" style="flex:1">Alle Regeln</button>
-              <button id="btn-rules-none" type="button" class="bp-small-btn" style="flex:1">Keine</button>
-            </div>
-            {rule_rows}
-            <button id="btn-checking-run" type="button" class="bp-primary-btn" style="width:100%;margin-top:4px">Prüfung starten</button>
-            <div id="checking-results" class="bp-results"></div>
-          </div>
-        </section>
-      </div>
-    </aside>
-
-    <main id="canvas-wrap" class="bp-canvas-wrap">
-      {no_models_hint}
-      <canvas id="three-canvas"></canvas>
-
-      <div id="search-bar" class="bp-search-bar">
-        <div style="display:flex;gap:5px">
-          <div style="flex:1;position:relative">
-            <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none" width="13" height="13" fill="none" stroke="#8896A5" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            <input id="gid-search" type="text" placeholder="GlobalId suchen…" class="bp-search-input" autocomplete="off">
-          </div>
-          <button id="search-clear" class="bp-search-clear">✕</button>
-        </div>
-        <div id="search-results" class="bp-search-results"></div>
-      </div>
-
-      <button id="info-float-toggle" type="button" class="bp-info-toggle">Element Info</button>
-      <section id="info-panel" class="bp-info-panel" aria-label="Element Info">
-        <div id="info-drag-handle" class="bp-info-head">
-          <span id="info-panel-title">Element Info</span>
-          <button id="info-close" type="button" class="bp-info-close" title="Fenster schließen">✕</button>
-        </div>
-        <div id="info-body" class="bp-info-body">
-          <div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">Klicken Sie auf ein Element<br>für Details.</div>
-        </div>
-      </section>
-
-      <div class="bp-help-hint">
-        LMB Drehen · MMB Verschieben · Scroll Zoom · Leertaste Ausblenden · Doppelklick öffnet Info
-      </div>
-
-      <div id="loading" class="bp-loading">
-        <div class="bp-spinner"></div>
-        <p id="load-txt" style="color:#4A5568;font-size:13px;margin:0;font-family:inherit">Verbindung zu R2 wird hergestellt…</p>
-        <div id="load-progress" style="margin-top:14px;width:240px;height:3px;background:#E2E8F0;border-radius:2px;overflow:hidden">
-          <div id="load-bar" style="width:0%;height:100%;background:#1E6FBF;transition:width .4s ease;border-radius:2px"></div>
-        </div>
-        <p id="load-sub" style="color:#8896A5;font-size:11px;margin:8px 0 0;font-family:inherit"></p>
-      </div>
-    </main>
-  </div>
+  </main>
 </div>
 
 
 <style>
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-.bp-viewer-shell{{height:calc(100vh - 52px);display:flex;flex-direction:column;overflow:hidden;background:#F3F5F8;color:#0D1B2A;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}}
-.bp-viewer-topbar{{height:44px;min-height:44px;background:#FFFFFF;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;gap:10px;padding:0 10px;box-shadow:0 1px 4px rgba(13,27,42,.04);z-index:30}}
-.bp-back{{font-weight:750;color:#0D1B2A;text-decoration:none;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;flex-shrink:0}}
-.bp-model-dropdown{{position:relative;flex-shrink:0}}
-.bp-model-dropdown-btn{{height:30px;display:flex;align-items:center;gap:7px;background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;padding:0 9px;color:#0D1B2A;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}}
-.bp-model-dropdown-btn:hover,.bp-model-dropdown.is-open .bp-model-dropdown-btn{{background:#EFF6FF;border-color:#93C5FD}}
-.bp-model-dropdown-title{{color:#475569;font-weight:750}}
-#model-count-label{{font-size:11px;color:#1E40AF;background:#DBEAFE;border-radius:999px;padding:2px 7px;line-height:1}}
-.bp-chevron{{font-size:10px;color:#64748B}}
-.bp-model-dropdown-menu{{display:none;position:absolute;top:36px;left:0;width:min(360px,calc(100vw - 24px));max-height:min(430px,70vh);overflow:hidden;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:12px;box-shadow:0 18px 44px rgba(15,23,42,.18);z-index:80}}
-.bp-model-dropdown.is-open .bp-model-dropdown-menu{{display:block}}
-.bp-model-menu-head{{padding:9px 10px;border-bottom:1px solid #E2E8F0;background:#F8FAFC;display:flex;justify-content:space-between;gap:12px;align-items:center}}
-.bp-model-menu-head span{{font-size:11px;font-weight:800;color:#0D1B2A;text-transform:uppercase;letter-spacing:.5px}}
-.bp-model-menu-head small{{font-size:10px;color:#64748B;white-space:nowrap}}
-#model-select-form{{max-height:360px;overflow-y:auto;padding:5px}}
+.bp-viewer-shell{{height:calc(100vh - 52px);overflow:hidden;background:#F3F5F8;color:#0D1B2A;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}}
+.bp-canvas-wrap{{position:relative;width:100%;height:100%;overflow:hidden;background:#F0F2F5}}
+#three-canvas{{width:100%!important;height:100%!important;display:block}}
+.bp-viewer-error{{position:absolute;top:12px;left:12px;right:142px;z-index:90;background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:10px;color:#991B1B;font-size:12px;line-height:1.45;box-shadow:0 14px 32px rgba(15,23,42,.14)}}
+.bp-panel-rail{{position:absolute;top:14px;right:14px;z-index:60;width:98px;display:flex;flex-direction:column;gap:7px;align-items:stretch;pointer-events:auto}}
+.bp-rail-btn{{width:100%;min-height:32px;padding:7px 8px;background:rgba(255,255,255,.94);border:1px solid #CBD5E1;border-radius:10px;color:#0D1B2A;font-size:11px;font-weight:800;line-height:1.15;cursor:pointer;font-family:inherit;box-shadow:0 8px 22px rgba(15,23,42,.12);backdrop-filter:blur(7px);text-align:center;transition:transform .12s,background .12s,border-color .12s}}
+.bp-rail-btn:hover{{background:#EFF6FF;border-color:#93C5FD;transform:translateX(-2px)}}
+.bp-rail-btn--primary{{background:#1E6FBF;color:#FFFFFF;border-color:#1E6FBF}}
+.bp-rail-btn--primary:hover{{background:#175A9D;color:#FFFFFF;border-color:#175A9D}}
+.bp-rail-btn--danger{{display:none;color:#DC2626;background:#FEF2F2;border-color:rgba(220,38,38,.25)}}
+.bp-hidden-count{{display:none;font-size:10px;color:#DC2626;background:#FEF2F2;padding:5px 7px;border-radius:9px;border:1px solid rgba(220,38,38,.2);text-align:center;box-shadow:0 8px 22px rgba(15,23,42,.10)}}
+#model-count-label{{display:inline-block;margin-top:3px;font-size:10px;color:#1E40AF;background:#DBEAFE;border-radius:999px;padding:2px 6px;line-height:1}}
+.bp-float-panel{{position:absolute;max-width:calc(100% - 140px);max-height:calc(100% - 28px);min-width:260px;min-height:150px;background:rgba(255,255,255,.98);border:1px solid #CBD5E1;border-radius:13px;display:flex;flex-direction:column;overflow:hidden;resize:both;box-shadow:0 18px 50px rgba(15,23,42,.18);z-index:20;backdrop-filter:blur(8px)}}
+.bp-float-panel.is-closed{{display:none}}
+.bp-float-panel.is-dragging{{user-select:none;box-shadow:0 24px 64px rgba(15,23,42,.24)}}
+.bp-float-head{{height:38px;min-height:38px;padding:0 9px 0 12px;font-size:10px;font-weight:900;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:move;flex-shrink:0}}
+.bp-float-head-actions{{display:flex;align-items:center;gap:6px;min-width:0}}
+.bp-float-close{{border:1px solid #E2E8F0;background:#FFFFFF;color:#64748B;cursor:pointer;font-size:13px;line-height:1;padding:3px 7px;border-radius:7px;font-family:inherit}}
+.bp-float-close:hover{{color:#DC2626;background:#FEF2F2;border-color:#FECACA}}
+.bp-float-body{{overflow:auto;padding:10px;font-size:12px;min-height:0;flex:1;background:#FFFFFF}}
+.bp-info-panel{{min-width:300px;min-height:220px}}
+.bp-info-body{{padding:12px}}
+.bp-nav-panel{{background:#FFFFFF}}
+.bp-cat-scroll{{flex:1;min-height:0;overflow-y:auto;padding:4px 0;background:#FAFBFC}}
+#load-status{{padding:7px 12px;font-size:11px;color:#64748B;border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px;display:flex;align-items:center}}
+.bp-panel-scroll{{padding:10px;background:#FFFFFF}}
+.bp-panel-note{{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:9px;padding:8px 9px;color:#64748B;font-size:11px;line-height:1.45;margin-bottom:10px}}
+.bp-model-list{{display:flex;flex-direction:column;gap:5px}}
 .bp-model-option{{display:flex;align-items:center;gap:7px;min-height:34px;padding:5px 7px;border-radius:8px;border:1px solid transparent;cursor:pointer;font-size:11px;transition:background .12s,border-color .12s}}
 .bp-model-option:hover{{background:#F8FAFC;border-color:#E2E8F0}}
 .bp-model-option.is-selected{{background:#EFF6FF;border-color:#BFDBFE}}
@@ -698,37 +715,15 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 .bp-model-text small{{font-size:9.5px;color:#8896A5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}}
 .bp-model-state{{width:7px;height:7px;border-radius:50%;opacity:.22;flex-shrink:0}}
 .bp-model-option.is-selected .bp-model-state{{opacity:1}}
-.bp-tabs{{display:flex;align-items:center;gap:3px;height:100%;flex:1;min-width:0;overflow:hidden}}
-.bp-tab-btn{{border:none;background:transparent;color:#64748B;font-size:12px;font-weight:650;padding:7px 8px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap}}
-.bp-tab-btn:hover{{background:#F1F5F9;color:#0D1B2A}}
-.bp-tab-btn.is-active{{background:#EFF6FF;color:#1E40AF}}
-.bp-topbar-tools{{display:flex;align-items:center;gap:6px;flex-shrink:0}}
-.bp-tool-btn{{font-size:12px;padding:6px 10px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;cursor:pointer;color:#0D1B2A;box-shadow:0 1px 4px rgba(13,27,42,.06);font-family:inherit;font-weight:650}}
-.bp-tool-btn:hover{{background:#F8FAFC;transform:translateY(-1px)}}
-#btn-show-all{{display:none;color:#DC2626;background:#FEF2F2;border-color:rgba(220,38,38,.25)}}
-#hidden-count{{font-size:11px;color:#DC2626;display:none;background:#FEF2F2;padding:5px 9px;border-radius:7px;border:1px solid rgba(220,38,38,.2)}}
-.bp-main{{flex:1;min-height:0;display:flex;overflow:hidden}}
-.bp-sidebar{{width:260px;min-width:260px;background:#FFFFFF;border-right:1px solid #E2E8F0;display:flex;flex-direction:column;overflow:hidden;box-shadow:2px 0 8px rgba(13,27,42,.04);z-index:5}}
-.bp-tab-stack{{flex:1;min-height:0;display:flex;overflow:hidden}}
-.bp-tab-panel{{display:none;flex:1;min-height:0;overflow:hidden;flex-direction:column;background:#FFFFFF}}
-.bp-tab-panel.is-active{{display:flex}}
-.bp-panel-scroll{{flex:1;min-height:0;overflow-y:auto;padding:10px;background:#FFFFFF}}
-.bp-nav-panel{{padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden}}
-.bp-section-head{{padding:9px 12px;font-size:10px;font-weight:850;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}}
-.bp-section-head small{{text-transform:none;letter-spacing:0;font-size:10px;font-weight:650;color:#94A3B8}}
-.bp-module-head{{margin:-10px -10px 10px;padding:9px 10px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:10px}}
-.bp-module-head strong{{display:block;font-size:12px;color:#0D1B2A}}
-.bp-module-head small{{display:block;font-size:10px;color:#64748B;margin-top:2px;line-height:1.25}}
-.bp-module-link{{font-size:10px;font-weight:750;color:#1E40AF;text-decoration:none;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:999px;padding:4px 8px;white-space:nowrap}}
-.bp-module-link:hover{{background:#DBEAFE;text-decoration:none}}
-.bp-small-btn{{font-size:10px;padding:4px 9px;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:5px;cursor:pointer;color:#64748B;font-weight:700;font-family:inherit}}
-.bp-primary-btn{{font-size:11px;padding:7px 10px;background:#1E6FBF;border:1px solid #1E6FBF;color:#fff;border-radius:7px;cursor:pointer;font-weight:750;font-family:inherit}}
-.bp-primary-btn:hover{{background:#175A9D}}
-.bp-cat-scroll{{flex:1;min-height:0;overflow-y:auto;padding:4px 0;background:#FAFBFC}}
-#load-status{{padding:7px 12px;font-size:11px;color:#64748B;border-top:1px solid #E2E8F0;flex-shrink:0;background:#F8FAFC;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px;display:flex;align-items:center}}
-.bp-field{{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:11px;color:#64748B;font-weight:700}}
-.bp-field select,.bp-field input{{width:100%;box-sizing:border-box;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:7px;padding:8px 9px;font-size:12px;color:#0D1B2A;font-family:inherit;outline:none}}
+.bp-field{{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:11px;color:#64748B;font-weight:750}}
+.bp-field select,.bp-field input{{width:100%;box-sizing:border-box;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:8px;padding:8px 9px;font-size:12px;color:#0D1B2A;font-family:inherit;outline:none}}
 .bp-field select:focus,.bp-field input:focus{{border-color:#1E6FBF;box-shadow:0 0 0 2px rgba(30,111,191,.12)}}
+.bp-mini-btn{{font-size:10px;padding:4px 8px;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:7px;cursor:pointer;color:#64748B;font-weight:800;font-family:inherit;white-space:nowrap}}
+.bp-mini-btn:hover{{background:#EFF6FF;color:#1E40AF;border-color:#BFDBFE}}
+.bp-primary-btn{{font-size:11px;padding:8px 10px;background:#1E6FBF;border:1px solid #1E6FBF;color:#fff;border-radius:8px;cursor:pointer;font-weight:800;font-family:inherit}}
+.bp-primary-btn:hover{{background:#175A9D}}
+.bp-module-link{{font-size:10px;font-weight:800;color:#1E40AF;text-decoration:none;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:999px;padding:4px 8px;white-space:nowrap;text-transform:none;letter-spacing:0}}
+.bp-module-link:hover{{background:#DBEAFE;text-decoration:none}}
 .bp-results{{display:flex;flex-direction:column;gap:8px;margin-top:10px;font-size:12px}}
 .bp-summary{{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:9px 10px;color:#334155;font-size:12px;margin-bottom:8px}}
 .bp-empty{{background:#F8FAFC;border:1px dashed #CBD5E1;border-radius:8px;padding:12px;color:#94A3B8;font-size:12px;text-align:center;line-height:1.5}}
@@ -749,30 +744,20 @@ def _render_viewer_page(account, project, project_id, selected_docs, all_ifc_doc
 .bp-table td{{border-bottom:1px solid #F1F5F9;padding:7px;color:#334155;vertical-align:top}}
 .bp-rule-row{{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border:1px solid #E2E8F0;border-radius:7px;margin-bottom:6px;background:#F8FAFC;color:#334155;font-size:11px;font-weight:650;cursor:pointer}}
 .bp-rule-row input{{margin-top:1px;accent-color:#1E6FBF}}
-.bp-canvas-wrap{{flex:1;min-width:0;position:relative;overflow:hidden;background:#F0F2F5}}
-#three-canvas{{width:100%!important;height:100%!important;display:block}}
-.bp-search-bar{{position:absolute;top:12px;left:12px;z-index:12;width:min(310px,calc(100% - 24px))}}
+.bp-search-bar{{position:absolute;top:12px;left:12px;z-index:12;width:min(310px,calc(100% - 156px))}}
 .bp-search-input{{width:100%;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#0D1B2A;padding:8px 10px 8px 30px;border-radius:9px;font-size:12px;outline:none;box-shadow:0 2px 10px rgba(13,27,42,.08);font-family:'Inter',system-ui,sans-serif}}
 .bp-search-clear{{display:none;background:rgba(255,255,255,.97);border:1px solid #E2E8F0;color:#8896A5;border-radius:9px;padding:7px 11px;cursor:pointer;font-size:12px;box-shadow:0 2px 10px rgba(13,27,42,.08)}}
 .bp-search-results{{display:none;margin-top:5px;background:rgba(255,255,255,.98);border:1px solid #E2E8F0;border-radius:9px;max-height:280px;overflow-y:auto;box-shadow:0 6px 20px rgba(13,27,42,.12)}}
-.bp-info-toggle{{position:absolute;right:14px;top:14px;z-index:17;display:none;align-items:center;gap:6px;padding:7px 11px;background:#FFFFFF;border:1px solid #CBD5E1;border-radius:999px;color:#0D1B2A;font-size:12px;font-weight:750;box-shadow:0 6px 18px rgba(15,23,42,.12);cursor:pointer;font-family:inherit}}
-.bp-info-panel{{position:absolute;top:58px;right:14px;width:min(360px,calc(100% - 28px));max-height:min(72vh,640px);min-height:160px;background:rgba(255,255,255,.98);border:1px solid #CBD5E1;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 50px rgba(15,23,42,.18);z-index:18;backdrop-filter:blur(6px)}}
-.bp-info-panel.is-closed{{display:none}}
-.bp-info-panel.is-dragging{{user-select:none;box-shadow:0 24px 64px rgba(15,23,42,.24)}}
-.bp-info-head{{padding:9px 12px;font-size:10px;font-weight:850;background:#F8FAFC;color:#64748B;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;cursor:move}}
-.bp-info-close{{border:none;background:#FFFFFF;color:#64748B;cursor:pointer;font-size:14px;line-height:1;padding:3px 6px;border-radius:6px;border:1px solid #E2E8F0}}
-.bp-info-close:hover{{color:#DC2626;background:#FEF2F2;border-color:#FECACA}}
-.bp-info-body{{overflow-y:auto;padding:12px;font-size:12px;min-height:0;flex:1}}
-.bp-help-hint{{position:absolute;bottom:14px;right:14px;font-size:10px;color:#8896A5;background:rgba(255,255,255,.88);padding:5px 11px;border-radius:7px;border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)}}
+.bp-help-hint{{position:absolute;bottom:14px;left:14px;font-size:10px;color:#8896A5;background:rgba(255,255,255,.88);padding:5px 11px;border-radius:7px;border:1px solid #E2E8F0;pointer-events:none;backdrop-filter:blur(4px)}}
 .bp-loading{{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(240,242,245,.96);z-index:20}}
 .bp-spinner{{width:46px;height:46px;border:3px solid #BFDBFE;border-top-color:#1E6FBF;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:18px}}
-#cat-scroll::-webkit-scrollbar,.bp-panel-scroll::-webkit-scrollbar,.bp-info-body::-webkit-scrollbar,#model-select-form::-webkit-scrollbar,.bp-table-wrap::-webkit-scrollbar{{width:5px;height:5px}}
-#cat-scroll::-webkit-scrollbar-thumb,.bp-panel-scroll::-webkit-scrollbar-thumb,.bp-info-body::-webkit-scrollbar-thumb,#model-select-form::-webkit-scrollbar-thumb,.bp-table-wrap::-webkit-scrollbar-thumb{{background:#CBD5E1;border-radius:3px}}
+.bp-float-body::-webkit-scrollbar,#cat-scroll::-webkit-scrollbar,.bp-info-body::-webkit-scrollbar,.bp-model-list::-webkit-scrollbar,.bp-table-wrap::-webkit-scrollbar{{width:5px;height:5px}}
+.bp-float-body::-webkit-scrollbar-thumb,#cat-scroll::-webkit-scrollbar-thumb,.bp-info-body::-webkit-scrollbar-thumb,.bp-model-list::-webkit-scrollbar-thumb,.bp-table-wrap::-webkit-scrollbar-thumb{{background:#CBD5E1;border-radius:3px}}
 @media (max-width: 980px){{
-  .bp-sidebar{{width:230px;min-width:230px}}
-  .bp-back{{max-width:150px}}
-  .bp-tab-btn{{padding:7px 6px;font-size:11px}}
-  .bp-tool-btn{{padding:6px 8px}}
+  .bp-panel-rail{{width:86px;right:8px;top:8px}}
+  .bp-rail-btn{{font-size:10px;padding:6px 5px}}
+  .bp-float-panel{{right:102px!important;max-width:calc(100% - 112px);min-width:230px}}
+  .bp-search-bar{{width:min(280px,calc(100% - 112px))}}
 }}
 </style>
 
@@ -815,9 +800,10 @@ const VIEWER_STATE_KEY = "bp_viewer_docs_" + PROJECT_ID;
 })();
 
 // ════════════════════════════════════════════════════════════════════════════
-// Topbar tabs + module APIs
+// Floating module panels + module APIs
 // ════════════════════════════════════════════════════════════════════════════
 let _issuesLoaded = false;
+let _floatPanelZ = 30;
 
 function _el(id){ return document.getElementById(id); }
 function _statusHtml(text){ return `<div class="bp-empty">${esc(text)}</div>`; }
@@ -838,20 +824,39 @@ async function _fetchJson(url, options){
   return data;
 }
 
-function switchViewerTab(tab){
-  document.querySelectorAll("[data-viewer-tab]").forEach(btn => {
-    const active = btn.dataset.viewerTab === tab;
-    btn.classList.toggle("is-active", active);
-    btn.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  document.querySelectorAll(".bp-tab-panel").forEach(panel => {
-    panel.classList.toggle("is-active", panel.id === `tab-${tab}`);
-  });
-  if (tab === "issues" && !_issuesLoaded) loadIssuesTab();
+function bringFloatPanelToFront(panel){
+  if(!panel) return;
+  panel.style.zIndex = String(++_floatPanelZ);
+}
+function openFloatPanel(id){
+  const panel = document.getElementById(id);
+  if(!panel) return;
+  panel.classList.remove("is-closed");
+  bringFloatPanelToFront(panel);
+  if(id === "tab-issues" && !_issuesLoaded) loadIssuesTab();
+}
+function closeFloatPanel(id){
+  const panel = document.getElementById(id);
+  if(panel) panel.classList.add("is-closed");
+}
+function toggleFloatPanel(id){
+  const panel = document.getElementById(id);
+  if(!panel) return;
+  if(panel.classList.contains("is-closed")) openFloatPanel(id);
+  else closeFloatPanel(id);
 }
 
-document.querySelectorAll("[data-viewer-tab]").forEach(btn => {
-  btn.addEventListener("click", () => switchViewerTab(btn.dataset.viewerTab));
+document.querySelectorAll("[data-open-panel]").forEach(btn => {
+  btn.addEventListener("click", () => toggleFloatPanel(btn.dataset.openPanel));
+});
+document.querySelectorAll("[data-close-panel]").forEach(btn => {
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    closeFloatPanel(btn.dataset.closePanel);
+  });
+});
+document.querySelectorAll(".bp-float-panel").forEach(panel => {
+  panel.addEventListener("mousedown", () => bringFloatPanelToFront(panel));
 });
 
 function _selectedRules(){
@@ -1364,44 +1369,40 @@ let _editElemData   = null;
 
 const HIGHLIGHT = new THREE.Color(0xff6600);
 const infoPanel = document.getElementById("info-panel");
-const infoToggle = document.getElementById("info-float-toggle");
-const infoDragHandle = document.getElementById("info-drag-handle");
 
-function openInfoPanel(){
-  if(infoPanel) infoPanel.classList.remove("is-closed");
-  if(infoToggle) infoToggle.style.display="none";
-}
-function closeInfoPanel(){
-  if(infoPanel) infoPanel.classList.add("is-closed");
-  if(infoToggle) infoToggle.style.display="inline-flex";
-}
+function openInfoPanel(){ openFloatPanel("info-panel"); }
+function closeInfoPanel(){ closeFloatPanel("info-panel"); }
 function resetInfoBody(message="Klicken Sie auf ein Element<br>für Details."){
   if(infoBody) infoBody.innerHTML=`<div style="color:#8896A5;font-style:italic;text-align:center;padding:28px 0;line-height:1.6">${message}</div>`;
 }
-infoToggle?.addEventListener("click", openInfoPanel);
 
-(function enableInfoPanelDrag(){
-  if(!infoPanel||!infoDragHandle||!wrap) return;
-  let dragging=false, sx=0, sy=0, ox=0, oy=0;
-  infoDragHandle.addEventListener("mousedown", e=>{
-    if(e.target.closest("button")) return;
-    const panelRect=infoPanel.getBoundingClientRect();
-    const wrapRect=wrap.getBoundingClientRect();
-    dragging=true; sx=e.clientX; sy=e.clientY;
-    ox=panelRect.left-wrapRect.left; oy=panelRect.top-wrapRect.top;
-    infoPanel.classList.add("is-dragging");
-    e.preventDefault();
+(function enableFloatingPanelDrag(){
+  if(!wrap) return;
+  document.querySelectorAll(".bp-float-panel").forEach(panel=>{
+    const handle=panel.querySelector(".bp-float-head");
+    if(!handle) return;
+    let dragging=false, sx=0, sy=0, ox=0, oy=0;
+    handle.addEventListener("mousedown", e=>{
+      if(e.target.closest("button,a,input,select,textarea,label")) return;
+      const panelRect=panel.getBoundingClientRect();
+      const wrapRect=wrap.getBoundingClientRect();
+      dragging=true; sx=e.clientX; sy=e.clientY;
+      ox=panelRect.left-wrapRect.left; oy=panelRect.top-wrapRect.top;
+      panel.classList.add("is-dragging");
+      bringFloatPanelToFront(panel);
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", e=>{
+      if(!dragging) return;
+      const maxX=Math.max(8,wrap.clientWidth-panel.offsetWidth-8);
+      const maxY=Math.max(8,wrap.clientHeight-panel.offsetHeight-8);
+      const x=Math.min(maxX,Math.max(8,ox+e.clientX-sx));
+      const y=Math.min(maxY,Math.max(8,oy+e.clientY-sy));
+      panel.style.left=x+"px"; panel.style.top=y+"px";
+      panel.style.right="auto"; panel.style.bottom="auto";
+    });
+    window.addEventListener("mouseup",()=>{ if(dragging){ dragging=false; panel.classList.remove("is-dragging"); } });
   });
-  window.addEventListener("mousemove", e=>{
-    if(!dragging) return;
-    const maxX=Math.max(0,wrap.clientWidth-infoPanel.offsetWidth-8);
-    const maxY=Math.max(0,wrap.clientHeight-infoPanel.offsetHeight-8);
-    const x=Math.min(maxX,Math.max(8,ox+e.clientX-sx));
-    const y=Math.min(maxY,Math.max(8,oy+e.clientY-sy));
-    infoPanel.style.left=x+"px"; infoPanel.style.top=y+"px";
-    infoPanel.style.right="auto"; infoPanel.style.bottom="auto";
-  });
-  window.addEventListener("mouseup",()=>{ if(dragging){ dragging=false; infoPanel.classList.remove("is-dragging"); } });
 })();
 
 function _inpS(){
@@ -1751,21 +1752,7 @@ function toggleAllDocs(v){
   updateModelDropdownLabel();
   applyNavSelection();
 }
-(function initModelDropdown(){
-  const dd=document.getElementById("model-dropdown"), btn=document.getElementById("model-dropdown-btn");
-  if(!dd||!btn)return;
-  btn.addEventListener("click",e=>{
-    e.stopPropagation();
-    const open=!dd.classList.contains("is-open");
-    dd.classList.toggle("is-open",open);
-    btn.setAttribute("aria-expanded",open?"true":"false");
-  });
-  document.addEventListener("mousedown",e=>{
-    if(!dd.contains(e.target)){
-      dd.classList.remove("is-open");
-      btn.setAttribute("aria-expanded","false");
-    }
-  });
+(function initModelPanelLabel(){
   updateModelDropdownLabel();
 })();
 
