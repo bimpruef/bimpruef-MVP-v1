@@ -1,10 +1,5 @@
 """
 main.py – BIMPruef FastAPI-Applikation
-
-Aktive Architektur:
-  - Projektdateien werden über Documents + R2 verwaltet.
-  - Der 3D Viewer lädt IFC-Dateien direkt über document_id.
-  - Kein viewer session slot cache.
 """
 
 import logging
@@ -23,7 +18,6 @@ from app.project_clash import project_clash_router
 from app.project_rulecheck import project_rulecheck_router
 from app.project_viewer import project_viewer_router
 from app.r2_storage import download_file_from_r2, r2_enabled, upload_file_to_r2
-
 from app.templates import (
     _base_styles as _bp_base_styles,
     _footer_html as _bp_footer_html,
@@ -39,8 +33,6 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Kein cleanup_old_sessions mehr:
-    # Die alte viewer/session/slot Architektur ist deaktiviert.
     yield
 
 
@@ -56,6 +48,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
     public_prefixes = (
+        "/",
         "/auth",
         "/impressum",
         "/datenschutz",
@@ -85,30 +78,34 @@ app.include_router(list_router)
 app.include_router(project_viewer_router)
 
 
+# ── Landing Page ──────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    user = get_current_user_optional(request)
+    if user:
+        return RedirectResponse("/projects", status_code=302)
+    landing_path = os.path.join(STATIC_DIR, "landing.html")
+    with open(landing_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
+# ── Debug ─────────────────────────────────────────────────────────────────────
+
 @app.get("/debug/r2-test")
 def r2_test():
     if not r2_enabled():
-        return PlainTextResponse(
-            "R2 is not configured.",
-            status_code=500,
-        )
+        return PlainTextResponse("R2 is not configured.", status_code=500)
 
     test_path = "/tmp/bimpruef-r2-test.txt"
     with open(test_path, "w", encoding="utf-8") as f:
         f.write("BIMPruef R2 test OK")
 
     storage_key = "debug/bimpruef-r2-test.txt"
-    upload_file_to_r2(
-        local_path=test_path,
-        storage_key=storage_key,
-        content_type="text/plain",
-    )
+    upload_file_to_r2(local_path=test_path, storage_key=storage_key, content_type="text/plain")
 
     download_path = "/tmp/bimpruef-r2-test-downloaded.txt"
-    download_file_from_r2(
-        storage_key=storage_key,
-        local_path=download_path,
-    )
+    download_file_from_r2(storage_key=storage_key, local_path=download_path)
 
     with open(download_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -116,29 +113,13 @@ def r2_test():
     return PlainTextResponse(f"R2 upload/download OK: {content}")
 
 
-def _base_styles():
-    return _bp_base_styles()
-
-
-def _footer():
-    return _bp_footer_html()
-
-
-def _build_page(title: str, body_html: str) -> HTMLResponse:
-    return _bp_build_page(title, body_html)
-
-
-def _render_error(title: str, message: str) -> HTMLResponse:
-    return _bp_render_error(title, message)
-
+# ── Legal ─────────────────────────────────────────────────────────────────────
 
 @app.get("/impressum", response_class=HTMLResponse)
 def impressum(request: Request):
-    content = render_impressum_module(back_link="/")
-    return _build_page("Impressum – BIMPruef", content)
+    return _bp_build_page("Impressum – BIMPruef", render_impressum_module(back_link="/"))
 
 
 @app.get("/datenschutz", response_class=HTMLResponse)
 def datenschutz(request: Request):
-    content = render_datenschutz_module(back_link="/")
-    return _build_page("Datenschutz – BIMPruef", content)
+    return _bp_build_page("Datenschutz – BIMPruef", render_datenschutz_module(back_link="/"))
