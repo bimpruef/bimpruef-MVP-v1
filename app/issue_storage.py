@@ -135,8 +135,6 @@ def ensure_issue_schema() -> None:
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE project_issues ADD COLUMN {name} {ddl}"))
     except Exception:
-        # Startup should not fail because of a transient DB/migration problem.
-        # Real DB operations will still raise clear errors later.
         pass
 
 
@@ -179,15 +177,23 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
     """
     Speichert ausgewählte Clash-Zeilen als Issues.
 
-    Deduplizierung:
-    pro Projekt wird dieselbe GlobalId-Paarung aus derselben Dokument-Kombination
-    nur einmal als Clash-Issue angelegt.
+    Deduplizierung (zweistufig):
+      1. seen_in_batch: filtert Duplikate innerhalb derselben Anfrage heraus,
+         bevor sie die Datenbank erreichen.
+      2. DB-Abfrage: prüft ob das Paar bereits in einem früheren Request
+         gespeichert wurde.
+
+    Bei einem unerwarteten IntegrityError (z. B. Race Condition zwischen zwei
+    gleichzeitigen Requests) wird nur das betroffene Issue übersprungen;
+    der Rest des Batches wird weiter verarbeitet.
     """
     if not clashes:
         raise ValidationError("Bitte mindestens eine Clash-Zeile auswählen.")
 
     now = _utcnow()
     created: list[dict] = []
+    # Deduplizierung innerhalb desselben Batch-Requests
+    seen_in_batch: set[tuple] = set()
 
     with SessionLocal() as db:
         project = _project_for_account(db, account_id, project_id)
@@ -201,6 +207,13 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
             if not gid1 or not gid2:
                 continue
 
+            # Stufe 1: In-Memory-Deduplizierung für diesen Request
+            dedupe_key = (project_id, doc1, gid1, doc2, gid2)
+            if dedupe_key in seen_in_batch:
+                continue
+            seen_in_batch.add(dedupe_key)
+
+            # Stufe 2: Datenbankabfrage auf bereits vorhandene Issues
             duplicate = (
                 db.query(ProjectIssue)
                 .filter(
@@ -257,8 +270,12 @@ def save_clash_issues(account_id: str, project_id: str, clashes: list[dict]) -> 
             try:
                 db.flush()
             except IntegrityError:
+                # Race Condition oder unbekannter DB-Constraint:
+                # dieses Issue überspringen, Session wiederherstellen,
+                # restlichen Batch weiter verarbeiten.
                 db.rollback()
-                raise ConflictError("Issue konnte wegen eines Datenkonflikts nicht gespeichert werden.")
+                project = _project_for_account(db, account_id, project_id)
+                continue
 
             created.append(_issue_to_dict(issue))
 
