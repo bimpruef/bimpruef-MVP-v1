@@ -16,6 +16,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.auth import require_user
+from app.exceptions import ValidationError
 from app.document_storage import (
     get_document,
     list_project_ifc_documents,
@@ -641,35 +642,43 @@ window.saveSelectedIssues = async function() {{
     return;
   }}
 
-  // Validierung vor dem Senden
   const valid = selected.filter(c => c && c.global_id_1 && c.global_id_2);
   if (!valid.length) {{
     alert("Die ausgewählten Clashes haben keine GlobalIds. Bitte Clash-Analyse neu starten (▶ klicken).");
     return;
   }}
 
-  const resp = await fetch(SAVE_URL, {{
-    method: "POST",
-    headers: {{"Content-Type": "application/json"}},
-    body: JSON.stringify({{clashes: valid}}),
-  }});
-  const data = await resp.json();
-
-  if (data.error) {{
-    alert("Fehler: " + data.error);
+  let resp;
+  let data;
+  try {{
+    resp = await fetch(SAVE_URL, {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{clashes: valid}}),
+    }});
+    data = await resp.json();
+  }} catch (e) {{
+    alert("Fehler beim Speichern der Issues: " + e.message);
     return;
   }}
 
-  const neu = data.saved || 0;
-  const gesamt = valid.length;
-  const duplikate = gesamt - neu;
-  if (neu > 0 && duplikate > 0) {{
-    alert(`${{neu}} Issue(s) neu gespeichert. ${{duplikate}} waren bereits vorhanden.`);
-  }} else if (neu > 0) {{
-    alert(`${{neu}} Issue(s) gespeichert.`);
-  }} else {{
-    alert(`Alle ${{gesamt}} Clashes waren bereits als Issues vorhanden.`);
+  if (!resp.ok || data.error) {{
+    alert("Fehler beim Speichern der Issues: " + (data.error || `HTTP ${{resp.status}}`));
+    return;
   }}
+
+  const savedCount = Number(data.saved || 0);
+  const requestedCount = valid.length;
+
+  if (savedCount !== requestedCount) {{
+    alert(
+      `Speichern unvollständig: ${{savedCount}} von ${{requestedCount}} Issue(s) wurden gespeichert. ` +
+      `Bitte den Server-Log prüfen.`
+    );
+    return;
+  }}
+
+  alert(`${{savedCount}} Issue(s) gespeichert.`);
   window.location.href = `/projects/${{encodeURIComponent(PROJECT_ID)}}/issues`;
 }};
 
@@ -798,7 +807,6 @@ async def project_clash_save_issues(request: Request, project_id: str):
         if not clashes:
             return JSONResponse({"error": "Keine Clashes im Request-Body."}, status_code=400)
 
-        # Nur Clashes mit gültigen GlobalIds weiterleiten
         valid_clashes = [
             c for c in clashes
             if str(c.get("global_id_1") or "").strip()
@@ -812,13 +820,28 @@ async def project_clash_save_issues(request: Request, project_id: str):
             }, status_code=400)
 
         saved = save_clash_issues(account["account_id"], project_id, valid_clashes)
+        if len(saved) != len(valid_clashes):
+            return JSONResponse({
+                "error": (
+                    f"Speichern unvollständig: {len(saved)} von "
+                    f"{len(valid_clashes)} Issue(s) gespeichert."
+                ),
+                "saved": len(saved),
+                "requested": len(valid_clashes),
+            }, status_code=500)
+
         return JSONResponse({
             "ok": True,
             "saved": len(saved),
+            "requested": len(valid_clashes),
             "issues": saved,
         })
-    except Exception as exc:
+    except ValidationError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({
+            "error": f"Issues konnten nicht gespeichert werden: {exc}"
+        }, status_code=500)
 
 
 @project_clash_router.get("/projects/{project_id}/clash/detail", response_class=HTMLResponse)
