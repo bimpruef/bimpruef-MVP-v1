@@ -6,6 +6,8 @@ issue_storage.py – Projektbasiertes Issues-Modul für BIMPruef
 - issue_counter در جدول Project ذخیره می‌شود و هرگز ریست نمی‌شود
 - حذف deduplication: یک clash می‌تواند چندین بار با شماره‌های مختلف ذخیره شود
 - issue_number در لیست ایشوها نمایش داده می‌شود
+- Legacy slot_1/slot_2 schema is repaired for Direct-Document inserts
+- Datenbankfehler werden nicht mehr als "Duplikate" verschluckt
 """
 
 import json
@@ -16,7 +18,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.db import SessionLocal, engine, init_db
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models import Project, ProjectIssue
 
 init_db()
@@ -95,17 +97,21 @@ def _issue_to_dict(issue: ProjectIssue) -> dict:
 
 def ensure_issue_schema() -> None:
     """
-    Migration idempotent برای دیتابیس‌های موجود.
-    ستون‌های جدید issue_number و document_id را اضافه می‌کند.
-    ستون issue_counter را به جدول projects اضافه می‌کند.
-    """
-    try:
-        init_db()
-        inspector = inspect(engine)
-        tables = set(inspector.get_table_names())
+    Idempotente Migration für bestehende Datenbanken.
 
+    Neben den aktuellen Direct-Document-Feldern repariert diese Migration auch
+    alte Datenbanken, in denen ``slot_1``/``slot_2`` noch als NOT-NULL-Spalten
+    ohne serverseitigen Default existieren. Solche Legacy-Spalten bleiben aus
+    Kompatibilitätsgründen bestehen, bekommen aber DEFAULT 0, damit neue Issues
+    ohne Slot-Felder gespeichert werden können.
+    """
+    init_db()
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    dialect = engine.dialect.name
+
+    try:
         with engine.begin() as conn:
-            # ─── project_issues ───────────────────────────────────────────
             if "project_issues" in tables:
                 existing = {c["name"] for c in inspector.get_columns("project_issues")}
                 issue_cols = {
@@ -126,7 +132,6 @@ def ensure_issue_schema() -> None:
                     "document_id_2":  "VARCHAR(64) NOT NULL DEFAULT ''",
                     "payload_json":   "TEXT NOT NULL DEFAULT '{}'",
                     "updated_at":     "TIMESTAMP WITH TIME ZONE",
-                    # ستون جدید شماره sequential
                     "issue_number":   "INTEGER NOT NULL DEFAULT 0",
                 }
                 for name, ddl in issue_cols.items():
@@ -135,16 +140,76 @@ def ensure_issue_schema() -> None:
                             f"ALTER TABLE project_issues ADD COLUMN {name} {ddl}"
                         ))
 
-            # ─── projects ────────────────────────────────────────────────
+                # Legacy-Schema reparieren: frühere ORM-Versionen hatten
+                # slot_1/slot_2 als NOT NULL, aber ohne Server-Default.
+                # Die Direct-Document-Architektur schreibt diese Felder nicht mehr.
+                if dialect == "postgresql":
+                    for legacy_col in ("slot_1", "slot_2"):
+                        if legacy_col in existing:
+                            conn.execute(text(
+                                f"UPDATE project_issues SET {legacy_col} = 0 "
+                                f"WHERE {legacy_col} IS NULL"
+                            ))
+                            conn.execute(text(
+                                f"ALTER TABLE project_issues "
+                                f"ALTER COLUMN {legacy_col} SET DEFAULT 0"
+                            ))
+
+                    # Alte Datensätze, die beim Hinzufügen von issue_number den
+                    # Default 0 erhalten haben, einmalig sinnvoll nummerieren.
+                    conn.execute(text("""
+                        WITH current_max AS (
+                            SELECT
+                                project_id,
+                                COALESCE(MAX(NULLIF(issue_number, 0)), 0) AS max_no
+                            FROM project_issues
+                            GROUP BY project_id
+                        ),
+                        numbered AS (
+                            SELECT
+                                i.issue_id,
+                                COALESCE(m.max_no, 0)
+                                + ROW_NUMBER() OVER (
+                                    PARTITION BY i.project_id
+                                    ORDER BY i.created_at NULLS LAST, i.issue_id
+                                ) AS new_no
+                            FROM project_issues AS i
+                            LEFT JOIN current_max AS m
+                              ON m.project_id = i.project_id
+                            WHERE COALESCE(i.issue_number, 0) = 0
+                        )
+                        UPDATE project_issues AS i
+                        SET issue_number = n.new_no
+                        FROM numbered AS n
+                        WHERE i.issue_id = n.issue_id
+                    """))
+
             if "projects" in tables:
                 proj_existing = {c["name"] for c in inspector.get_columns("projects")}
                 if "issue_counter" not in proj_existing:
                     conn.execute(text(
-                        "ALTER TABLE projects ADD COLUMN issue_counter INTEGER NOT NULL DEFAULT 0"
+                        "ALTER TABLE projects "
+                        "ADD COLUMN issue_counter INTEGER NOT NULL DEFAULT 0"
                     ))
 
-    except Exception:
-        pass
+            # Counter nach Migration/Altbestand mindestens auf die höchste
+            # bereits vergebene Issue-Nummer setzen.
+            if dialect == "postgresql" and {"projects", "project_issues"}.issubset(tables):
+                conn.execute(text("""
+                    UPDATE projects AS p
+                    SET issue_counter = GREATEST(
+                        COALESCE(p.issue_counter, 0),
+                        COALESCE((
+                            SELECT MAX(i.issue_number)
+                            FROM project_issues AS i
+                            WHERE i.project_id = p.project_id
+                        ), 0)
+                    )
+                """))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Issue-Datenbankschema konnte nicht aktualisiert werden: {exc}"
+        ) from exc
 
 
 ensure_issue_schema()
@@ -216,19 +281,15 @@ def save_clash_issues(
     clashes: list[dict],
 ) -> list[dict]:
     """
-    هر clash انتخاب‌شده را به عنوان یک Issue جدید ذخیره می‌کند.
+    Speichert jeden ausgewählten Clash als neues Issue.
 
-    قوانین:
-    - هر clash → یک Issue جدید با issue_number منحصربه‌فرد
-    - issue_number از project.issue_counter گرفته می‌شود و با هر ذخیره +1 می‌شود
-    - شمارنده هرگز ریست نمی‌شود حتی با حذف issue
-    - یک clash می‌تواند چندین بار با شماره‌های مختلف ذخیره شود
-    - GlobalId هر دو طرف باید موجود باشد
+    Es gibt bewusst keine Deduplication: derselbe Clash darf mehrfach als
+    separates Issue gespeichert werden. Der komplette Request wird atomar
+    gespeichert; bei einem Datenbankfehler wird nichts teilweise übernommen.
     """
     if not clashes:
         raise ValidationError("Bitte mindestens eine Clash-Zeile auswählen.")
 
-    # اعتبارسنجی اولیه
     valid_clashes = [
         c for c in clashes
         if str(c.get("global_id_1") or "").strip()
@@ -244,77 +305,84 @@ def save_clash_issues(
     created: list[dict] = []
 
     with SessionLocal() as db:
-        # with_for_update برای جلوگیری از race condition در شمارنده
-        project = _project_for_account(db, account_id, project_id)
+        try:
+            # Row-Lock schützt die fortlaufende Projektnummerierung.
+            project = _project_for_account(db, account_id, project_id)
 
-        for clash in valid_clashes:
-            gid1 = _clean(clash.get("global_id_1", ""), 80)
-            gid2 = _clean(clash.get("global_id_2", ""), 80)
+            for clash in valid_clashes:
+                gid1 = _clean(clash.get("global_id_1", ""), 80)
+                gid2 = _clean(clash.get("global_id_2", ""), 80)
+                if not gid1 or not gid2:
+                    continue
 
-            if not gid1 or not gid2:
-                continue
+                project.issue_counter = int(project.issue_counter or 0) + 1
+                next_number = project.issue_counter
 
-            # شماره بعدی را از شمارنده پروژه بگیر
-            project.issue_counter = (project.issue_counter or 0) + 1
-            next_number = project.issue_counter
+                type1 = _clean(clash.get("type_1", ""), 120)
+                type2 = _clean(clash.get("type_2", ""), 120)
+                name1 = _clean(clash.get("name_1", ""), 255)
+                name2 = _clean(clash.get("name_2", ""), 255)
+                doc1 = _clean(clash.get("document_id_1", ""), 64)
+                doc2 = _clean(clash.get("document_id_2", ""), 64)
 
-            type1 = _clean(clash.get("type_1", ""), 120)
-            type2 = _clean(clash.get("type_2", ""), 120)
-            name1 = _clean(clash.get("name_1", ""), 255)
-            name2 = _clean(clash.get("name_2", ""), 255)
-            doc1  = _clean(clash.get("document_id_1", ""), 64)
-            doc2  = _clean(clash.get("document_id_2", ""), 64)
+                title = (
+                    f"#{next_number} – Clash: "
+                    f"{type1 or 'Element A'} ↔ {type2 or 'Element B'}"
+                )
+                description = (
+                    f"Clash-Issue #{next_number}\n\n"
+                    f"Element A: {type1} | {name1} | {gid1}\n"
+                    f"Element B: {type2} | {name2} | {gid2}"
+                )
 
-            title = (
-                f"#{next_number} – Clash: "
-                f"{type1 or 'Element A'} ↔ {type2 or 'Element B'}"
-            )
-            description = (
-                f"Clash-Issue #{next_number}\n\n"
-                f"Element A: {type1} | {name1} | {gid1}\n"
-                f"Element B: {type2} | {name2} | {gid2}"
-            )
+                issue = ProjectIssue(
+                    issue_id=uuid.uuid4().hex,
+                    issue_number=next_number,
+                    project_id=project_id,
+                    source="clash",
+                    issue_type="clash",
+                    title=title[:255],
+                    description=description,
+                    status="open",
+                    priority="normal",
+                    global_id_1=gid1,
+                    global_id_2=gid2,
+                    type_1=type1,
+                    type_2=type2,
+                    name_1=name1,
+                    name_2=name2,
+                    file_label_1=_clean(clash.get("file_label_1", ""), 255),
+                    file_label_2=_clean(clash.get("file_label_2", ""), 255),
+                    document_id_1=doc1,
+                    document_id_2=doc2,
+                    payload_json=json.dumps(clash, ensure_ascii=False, default=str),
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(issue)
+                created.append(_issue_to_dict(issue))
 
-            issue = ProjectIssue(
-                issue_id=uuid.uuid4().hex,
-                issue_number=next_number,
-                project_id=project_id,
-                source="clash",
-                issue_type="clash",
-                title=title[:255],
-                description=description,
-                status="open",
-                priority="normal",
-                global_id_1=gid1,
-                global_id_2=gid2,
-                type_1=type1,
-                type_2=type2,
-                name_1=name1,
-                name_2=name2,
-                file_label_1=_clean(clash.get("file_label_1", ""), 255),
-                file_label_2=_clean(clash.get("file_label_2", ""), 255),
-                document_id_1=doc1,
-                document_id_2=doc2,
-                payload_json=json.dumps(clash, ensure_ascii=False, default=str),
-                created_at=now,
-                updated_at=now,
-            )
+            if len(created) != len(valid_clashes):
+                raise ValidationError(
+                    "Mindestens ein ausgewählter Clash enthält unvollständige Daten."
+                )
 
-            db.add(issue)
+            # WICHTIG: Flush nicht mehr pro Issue schlucken. Ein Constraint-Fehler
+            # muss sichtbar werden, sonst meldet das Frontend fälschlich "Duplikat".
+            db.flush()
+            project.updated_at = now
+            db.commit()
 
-            try:
-                db.flush()
-            except IntegrityError:
-                db.rollback()
-                # شمارنده را برگردان چون این issue ذخیره نشد
-                project = _project_for_account(db, account_id, project_id)
-                # شمارنده دست نخورده بماند – شماره مصرف شده است
-                continue
-
-            created.append(_issue_to_dict(issue))
-
-        project.updated_at = now
-        db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            detail = str(getattr(exc, "orig", exc))
+            raise ConflictError(
+                "Issues konnten nicht gespeichert werden. "
+                f"Datenbank-Constraint: {detail}"
+            ) from exc
+        except Exception:
+            db.rollback()
+            raise
 
     return created
 
