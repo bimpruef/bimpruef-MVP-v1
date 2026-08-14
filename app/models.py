@@ -69,6 +69,10 @@ class Project(Base):
     description = Column(Text, default="", nullable=False)
     status = Column(String(40), default="active", nullable=False)
 
+    # Monotonically increasing counter used to assign stable issue numbers.
+    # Existing databases are upgraded idempotently by app.issue_storage.
+    issue_counter = Column(Integer, default=0, nullable=False)
+
     created_at = Column(
         DateTime(timezone=True),
         default=_utcnow,
@@ -167,6 +171,7 @@ class ProjectIssue(Base):
     __tablename__ = "project_issues"
 
     issue_id = Column(String(64), primary_key=True, index=True)
+    issue_number = Column(Integer, default=0, nullable=False, index=True)
     project_id = Column(
         String(64),
         ForeignKey("projects.project_id", ondelete="CASCADE"),
