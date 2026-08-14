@@ -12,13 +12,11 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
-
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.db import SessionLocal, engine, init_db
-from app.exceptions import NotFoundError, ValidationError, ConflictError
+from app.exceptions import NotFoundError, ValidationError
 from app.models import Project, ProjectIssue
 
 init_db()
@@ -126,8 +124,6 @@ def ensure_issue_schema() -> None:
                     "file_label_2":   "VARCHAR(255) NOT NULL DEFAULT ''",
                     "document_id_1":  "VARCHAR(64) NOT NULL DEFAULT ''",
                     "document_id_2":  "VARCHAR(64) NOT NULL DEFAULT ''",
-                    "slot_1":         "INTEGER NOT NULL DEFAULT 0",
-                    "slot_2":         "INTEGER NOT NULL DEFAULT 0",
                     "payload_json":   "TEXT NOT NULL DEFAULT '{}'",
                     "updated_at":     "TIMESTAMP WITH TIME ZONE",
                     # ستون جدید شماره sequential
@@ -299,8 +295,6 @@ def save_clash_issues(
                 file_label_2=_clean(clash.get("file_label_2", ""), 255),
                 document_id_1=doc1,
                 document_id_2=doc2,
-                slot_1=int(clash.get("slot_1", 0) or 0),
-                slot_2=int(clash.get("slot_2", 0) or 0),
                 payload_json=json.dumps(clash, ensure_ascii=False, default=str),
                 created_at=now,
                 updated_at=now,
